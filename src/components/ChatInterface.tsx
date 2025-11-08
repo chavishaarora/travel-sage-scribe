@@ -1,0 +1,223 @@
+import { useState, useEffect, useRef } from "react";
+import { User } from "@supabase/supabase-js";
+import { supabase } from "@/integrations/supabase/client";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Send, MapPin } from "lucide-react";
+import { toast } from "sonner";
+
+interface Message {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+}
+
+interface ChatInterfaceProps {
+  user: User | null;
+  onLocationSelect: (location: { lat: number; lng: number; name: string }) => void;
+}
+
+const ChatInterface = ({ user, onLocationSelect }: ChatInterfaceProps) => {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (user) {
+      loadOrCreateConversation();
+    }
+  }, [user]);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  const scrollToBottom = () => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  };
+
+  const loadOrCreateConversation = async () => {
+    if (!user) return;
+
+    try {
+      // Try to get active conversation
+      const { data: conversations, error: convError } = await supabase
+        .from("conversations")
+        .select("*")
+        .eq("user_id", user.id)
+        .eq("status", "active")
+        .order("created_at", { ascending: false })
+        .limit(1);
+
+      if (convError) throw convError;
+
+      let convId: string;
+      if (conversations && conversations.length > 0) {
+        convId = conversations[0].id;
+      } else {
+        // Create new conversation
+        const { data: newConv, error: createError } = await supabase
+          .from("conversations")
+          .insert({ user_id: user.id })
+          .select()
+          .single();
+
+        if (createError) throw createError;
+        convId = newConv.id;
+      }
+
+      setConversationId(convId);
+
+      // Load messages
+      const { data: msgs, error: msgError } = await supabase
+        .from("messages")
+        .select("*")
+        .eq("conversation_id", convId)
+        .order("created_at", { ascending: true });
+
+      if (msgError) throw msgError;
+
+      if (msgs && msgs.length === 0) {
+        // Add welcome message
+        const welcomeMsg = {
+          id: "welcome",
+          role: "assistant" as const,
+          content: "Hello! I'm your AI travel agent. I'll help you plan your perfect trip by asking you some questions. Where would you like to go? You can type or click on the map!",
+          created_at: new Date().toISOString(),
+        };
+        setMessages([welcomeMsg]);
+      } else {
+        setMessages(msgs as Message[]);
+      }
+    } catch (error: any) {
+      toast.error("Failed to load conversation");
+      console.error(error);
+    }
+  };
+
+  const sendMessage = async () => {
+    if (!input.trim() || !conversationId || !user) return;
+
+    const userMessage = input.trim();
+    setInput("");
+    setLoading(true);
+
+    try {
+      // Add user message to UI
+      const tempUserMsg: Message = {
+        id: `temp-${Date.now()}`,
+        role: "user",
+        content: userMessage,
+        created_at: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, tempUserMsg]);
+
+      // Save user message
+      await supabase.from("messages").insert({
+        conversation_id: conversationId,
+        role: "user",
+        content: userMessage,
+      });
+
+      // Get all messages for context
+      const { data: allMessages } = await supabase
+        .from("messages")
+        .select("role, content")
+        .eq("conversation_id", conversationId)
+        .order("created_at", { ascending: true });
+
+      // Call AI edge function
+      const { data, error } = await supabase.functions.invoke("travel-chat", {
+        body: {
+          messages: allMessages || [],
+          conversationId,
+        },
+      });
+
+      if (error) throw error;
+
+      const assistantMsg: Message = {
+        id: `ai-${Date.now()}`,
+        role: "assistant",
+        content: data.response,
+        created_at: new Date().toISOString(),
+      };
+
+      setMessages((prev) => [...prev, assistantMsg]);
+
+      // Save assistant message
+      await supabase.from("messages").insert({
+        conversation_id: conversationId,
+        role: "assistant",
+        content: data.response,
+      });
+    } catch (error: any) {
+      toast.error("Failed to send message");
+      console.error(error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  };
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="p-4 border-b bg-muted/50">
+        <h2 className="text-lg font-semibold text-foreground">Chat with AI Travel Agent</h2>
+        <p className="text-sm text-muted-foreground">Ask questions or click the map to select destinations</p>
+      </div>
+
+      <ScrollArea className="flex-1 p-4">
+        <div className="space-y-4">
+          {messages.map((message) => (
+            <div
+              key={message.id}
+              className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
+            >
+              <div
+                className={`max-w-[80%] rounded-lg px-4 py-2 ${
+                  message.role === "user"
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-muted text-foreground"
+                }`}
+              >
+                <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+              </div>
+            </div>
+          ))}
+          <div ref={scrollRef} />
+        </div>
+      </ScrollArea>
+
+      <div className="p-4 border-t bg-background">
+        <div className="flex gap-2">
+          <Input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyPress={handleKeyPress}
+            placeholder="Type your message or select a location on the map..."
+            disabled={loading}
+            className="flex-1"
+          />
+          <Button onClick={sendMessage} disabled={loading || !input.trim()}>
+            <Send className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default ChatInterface;
