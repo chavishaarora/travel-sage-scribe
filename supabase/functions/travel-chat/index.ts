@@ -20,23 +20,21 @@ function parseRecommendationsWithLinks(
   response: string,
   destination: string
 ): string {
-  // EXPANDED pattern with more trigger keywords
   const placePattern =
     /(?:Visit|Dine at|Explore|Try|Experience|Enjoy|Go to|See|Check out|Discover|Browse|Sample|Hike|Trek|Climb|Tour|Take|Do|Participate in|Attend|Join|Relax at|Swim at|Kayak in|Bike through|Walk to|Drive to|Sail on|Surf at|Ski on|Climb|Watch|Taste|Drink|Eat at|Have|Book|Reserve|Book a tour|Take a tour|Go on|View|Visit the|Go for|Catch|Watch the|Ride|Take a|Have a|Enjoy the|Admire|Appreciate|See the|Walk around|Stroll through|Wander in)\s+([^-\n.;,]*?)(?:\s*[-:.;,]|$|\n)/gi;
 
   let enhancedResponse = response;
   const matches = response.matchAll(placePattern);
-  const processedPlaces = new Set<string>(); // Avoid duplicates
+  const processedPlaces = new Set<string>();
 
   for (const match of matches) {
     let placeName = match[1]?.trim();
     
     if (placeName && placeName.length > 2 && !processedPlaces.has(placeName.toLowerCase())) {
-      // Clean up the place name
       placeName = placeName
-        .replace(/\s+/g, " ") // Remove extra spaces
-        .split(" - ")[0] // Remove descriptions after dash
-        .split(" (")[0] // Remove parentheses
+        .replace(/\s+/g, " ")
+        .split(" - ")[0]
+        .split(" (")[0]
         .trim();
 
       if (placeName.length > 2) {
@@ -44,7 +42,6 @@ function parseRecommendationsWithLinks(
         const mapsUrl = createGoogleMapsUrl(placeName, destination);
         const original = match[0];
         
-        // Only add link if not already present
         if (!enhancedResponse.includes(mapsUrl)) {
           const enhanced = `${original}\n🗺️ [${placeName}](${mapsUrl})`;
           enhancedResponse = enhancedResponse.replace(original, enhanced);
@@ -83,6 +80,7 @@ serve(async (req) => {
 
     // Determine the current stage of the conversation
     const conversationData = conversation?.preferences || {};
+    const hasOrigin = conversationData.origin;
     const hasDestination = conversation?.destination || conversationData.destination;
     const hasWeatherPreference = conversationData.weather_preference;
     const hasActivities = conversationData.activities;
@@ -97,16 +95,22 @@ serve(async (req) => {
 CONVERSATION STAGE RULES:
 `;
 
-    if (!hasDestination) {
+    if (!hasOrigin) {
       systemPrompt += `
-STAGE 1: NO DESTINATION YET
-- First, ask about their preferred weather/climate (tropical, temperate, cold, dry, rainy, etc.)
+STAGE 1: NO ORIGIN YET
+- Start by asking where they'll be traveling FROM (their origin city/country)
+- Be friendly and explain this helps with flight planning and travel time considerations
+- Do NOT ask about destination or other details yet`;
+    } else if (!hasDestination) {
+      systemPrompt += `
+STAGE 2: NO DESTINATION YET (Origin: ${hasOrigin})
+- Now ask about their preferred weather/climate (tropical, temperate, cold, dry, rainy, etc.)
 - Based on their weather preference, suggest 2-3 specific destinations
 - Ask which destination appeals to them
 - Do NOT ask about activities or budget yet`;
     } else if (!hasWeatherPreference) {
       systemPrompt += `
-STAGE 2: DESTINATION SELECTED (${hasDestination})
+STAGE 3: DESTINATION SELECTED (Origin: ${hasOrigin}, Destination: ${hasDestination})
 - Confirm the selected destination
 - Ask about types of activities they're interested in:
   * Passive/relaxing (beach, spa, cultural tours, museums)
@@ -115,7 +119,7 @@ STAGE 2: DESTINATION SELECTED (${hasDestination})
 - Do NOT ask about budget or dates yet`;
     } else if (!hasActivities) {
       systemPrompt += `
-STAGE 3: ACTIVITIES NOT YET SPECIFIED
+STAGE 4: ACTIVITIES NOT YET SPECIFIED
 - Ask about the types of activities they're interested in:
   * Passive/relaxing (beach, spa, cultural tours, museums)
   * Active (hiking, water sports, adventure activities)
@@ -124,7 +128,7 @@ STAGE 3: ACTIVITIES NOT YET SPECIFIED
 - Do NOT ask about budget or dates yet`;
     } else if (!hasBudget) {
       systemPrompt += `
-STAGE 4: BUDGET NOT SET
+STAGE 5: BUDGET NOT SET
 - Ask for their total budget for the entire trip
 - Then ask how they want to allocate it:
   * What % should go to accommodation?
@@ -134,7 +138,7 @@ STAGE 4: BUDGET NOT SET
 - Be conversational and help them think through allocation`;
     } else if (!hasBudgetAllocation) {
       systemPrompt += `
-STAGE 5: ALLOCATE BUDGET
+STAGE 6: ALLOCATE BUDGET
 - They have a total budget of: ${conversation?.budget}
 - Ask them to allocate their budget across:
   * Accommodation (hotels)
@@ -144,19 +148,20 @@ STAGE 5: ALLOCATE BUDGET
 - Confirm the total equals their budget`;
     } else if (!hasDates) {
       systemPrompt += `
-STAGE 6: DATES NOT SET
+STAGE 7: DATES NOT SET
 - Ask for their preferred travel dates (start and end)
 - Ask if they have flexibility with dates (yes/no/somewhat)
 - Explain how flexibility can affect prices`;
     } else if (!hasFlexibility) {
       systemPrompt += `
-STAGE 7: CHECK DATE FLEXIBILITY
+STAGE 8: CHECK DATE FLEXIBILITY
 - Ask if they're flexible with their dates (strictly booked or can move ±3-7 days?)
 - This helps with finding better flight and hotel deals`;
     } else {
       systemPrompt += `
-STAGE 8: ALL INFO COLLECTED - GENERATE DETAILED ITINERARY
+STAGE 9: ALL INFO COLLECTED - GENERATE DETAILED ITINERARY
 Current Trip Details:
+- Origin: ${hasOrigin}
 - Destination: ${hasDestination}
 - Activities Preference: ${hasActivities}
 - Total Budget: ${hasBudget}
@@ -216,7 +221,42 @@ GENERAL RULES:
 - Extract all relevant information from their responses
 - If they mention location during conversation, note it as their destination
 - Never skip stages - gather info in order
-- Be concise - keep responses under 150 words for stage transitions`;
+- Be concise - keep responses under 150 words for stage transitions
+
+CRITICAL - INFORMATION EXTRACTION:
+After each user response, you MUST extract structured data and return it in a special JSON block at the END of your message.
+Format: |||EXTRACT|||{json}|||END|||
+
+Extract these fields when mentioned by the user:
+{
+  "origin": "string | null",
+  "destination": "string | null",
+  "weather_preference": "tropical | temperate | cold | dry | null",
+  "activities": "passive | active | mixed | null",
+  "budget": "number | null",
+  "budget_allocation": {"accommodation": number, "flights": number, "activities": number} | null,
+  "dates": "string | null",
+  "date_flexibility": "flexible | strict | null"
+}
+
+Examples:
+User: "I'm traveling from New York"
+Your response: "[friendly acknowledgment]
+|||EXTRACT|||{"origin": "New York"}|||END|||"
+
+User: "I want to go somewhere warm and sunny"
+Your response: "[friendly message about warm destinations]
+|||EXTRACT|||{"weather_preference": "tropical"}|||END|||"
+
+User: "Let's go to Paris in June"
+Your response: "[exciting message about Paris]
+|||EXTRACT|||{"destination": "Paris", "dates": "June"}|||END|||"
+
+User: "I'm from London and have $3000 and want to relax at beaches"
+Your response: "[helpful message about beach destinations]
+|||EXTRACT|||{"origin": "London", "budget": 3000, "activities": "passive", "weather_preference": "tropical"}|||END|||"
+
+ALWAYS include the extraction block, even if empty: |||EXTRACT|||{}|||END|||`;
 
     // Call OpenAI ChatGPT
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -268,100 +308,57 @@ GENERAL RULES:
     const data = await response.json();
     let aiResponse = data.choices[0].message.content;
 
+    // Extract structured data from AI response
+    const extractMatch = aiResponse.match(/\|\|\|EXTRACT\|\|\|(.*?)\|\|\|END\|\|\|/s);
+    let extractedData = {};
+    
+    if (extractMatch) {
+      try {
+        extractedData = JSON.parse(extractMatch[1].trim());
+        // Remove the extraction block from the user-facing response
+        aiResponse = aiResponse.replace(/\|\|\|EXTRACT\|\|\|.*?\|\|\|END\|\|\|/s, '').trim();
+      } catch (e) {
+        console.error("Failed to parse extracted data:", e);
+      }
+    }
+
     // Add Google Maps links to the response if we're at the itinerary stage
     if (hasDestination && hasActivities && hasBudget && hasDates && hasFlexibility) {
       aiResponse = parseRecommendationsWithLinks(aiResponse, hasDestination);
     }
 
-    // Extract and update conversation data based on user's last message
-    const lastUserMessage = messages.filter((m: any) => m.role === "user").pop()?.content || "";
+    // Update conversation with extracted data
     const updates: any = {};
     const newPreferences = { ...conversationData };
 
-    // Extract destination if mentioned
-    const destinationKeywords = [
-      "paris", "tokyo", "bali", "new york", "barcelona", "london", "dubai",
-      "thailand", "italy", "france", "japan", "spain", "greece", "amsterdam",
-      "berlin", "rome", "venice", "istanbul", "morocco", "egypt", "corsica",
-      "provence", "swiss", "austria", "iceland", "norway", "korea", "mexico",
-    ];
-    if (!hasDestination) {
-      const mentioned = destinationKeywords.find((dest) =>
-        lastUserMessage.toLowerCase().includes(dest)
-      );
-      if (mentioned) {
-        updates.destination = mentioned.charAt(0).toUpperCase() + mentioned.slice(1);
-      }
+    // Apply extracted data to updates
+    if (extractedData.origin) {
+      newPreferences.origin = extractedData.origin;
     }
-
-    // Extract weather preference
-    const weatherKeywords = {
-      tropical: ["tropical", "warm", "hot", "beach", "sunny", "caribbean"],
-      temperate: ["mild", "spring", "fall", "moderate", "pleasant", "cool"],
-      cold: ["snow", "winter", "cold", "skiing", "cozy", "alpine"],
-      dry: ["dry", "desert", "sunny", "arid", "mediterranean"],
-    };
-    if (!hasWeatherPreference) {
-      for (const [weather, keywords] of Object.entries(weatherKeywords)) {
-        if (keywords.some((kw) => lastUserMessage.toLowerCase().includes(kw))) {
-          newPreferences.weather_preference = weather;
-          break;
-        }
-      }
+    if (extractedData.destination) {
+      updates.destination = extractedData.destination;
     }
-
-    // Extract activities
-    const activityKeywords = {
-      passive: ["relax", "spa", "museum", "cultural", "beach", "wine", "tour", "gallery"],
-      active: ["hiking", "sport", "adventure", "trek", "dive", "climb", "water", "biking"],
-      mixed: ["mix", "both", "variety", "everything", "combination"],
-    };
-    if (!hasActivities) {
-      for (const [activity, keywords] of Object.entries(activityKeywords)) {
-        if (keywords.some((kw) => lastUserMessage.toLowerCase().includes(kw))) {
-          newPreferences.activities = activity;
-          break;
-        }
-      }
+    if (extractedData.weather_preference) {
+      newPreferences.weather_preference = extractedData.weather_preference;
     }
-
-    // Extract budget
-    if (!hasBudget) {
-      const budgetMatch = lastUserMessage.match(/\$?([\d,]+)/);
-      if (budgetMatch) {
-        const budgetAmount = parseInt(budgetMatch[1].replace(/,/g, ""));
-        updates.budget = budgetAmount.toString();
-      }
+    if (extractedData.activities) {
+      newPreferences.activities = extractedData.activities;
     }
-
-    // Extract dates
-    if (!hasDates) {
-      const dateMatch = lastUserMessage.match(
-        /(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})|(\w+\s+\d{1,2})|(\d+\s+(?:days|nights|weeks))/gi
-      );
-      if (dateMatch) {
-        newPreferences.dates = dateMatch.join(" ");
-      }
+    if (extractedData.budget) {
+      updates.budget = extractedData.budget.toString();
     }
-
-    // Extract date flexibility
-    if (hasDates && !hasFlexibility) {
-      const flexibleKeywords = ["flexible", "can move", "somewhat", "yes"];
-      const strictKeywords = ["strict", "fixed", "exact", "no"];
-
-      if (flexibleKeywords.some((kw) =>
-        lastUserMessage.toLowerCase().includes(kw)
-      )) {
-        newPreferences.date_flexibility = "flexible";
-      } else if (strictKeywords.some((kw) =>
-        lastUserMessage.toLowerCase().includes(kw)
-      )) {
-        newPreferences.date_flexibility = "strict";
-      }
+    if (extractedData.budget_allocation) {
+      newPreferences.budget_allocation = extractedData.budget_allocation;
+    }
+    if (extractedData.dates) {
+      newPreferences.dates = extractedData.dates;
+    }
+    if (extractedData.date_flexibility) {
+      newPreferences.date_flexibility = extractedData.date_flexibility;
     }
 
     // Update conversation with new preferences
-    if (Object.keys(updates).length > 0 || Object.keys(newPreferences).length > 0) {
+    if (Object.keys(updates).length > 0 || Object.keys(newPreferences).length > Object.keys(conversationData).length) {
       await supabase
         .from("conversations")
         .update({
