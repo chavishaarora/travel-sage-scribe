@@ -7,9 +7,29 @@ import { Plane, MapPin, Hotel, Star } from "lucide-react";
 const Index = () => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
+  const [mapLoaded, setMapLoaded] = useState(false);
+  const mapRef = useRef(null);
+  const [selectedLocations, setSelectedLocations] = useState([]);
 
+  // Initialize Google Maps
   useEffect(() => {
-    // Check if user is logged in
+    const script = document.createElement("script");
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${process.env.REACT_APP_GOOGLE_MAPS_API_KEY}&libraries=places`;
+    script.async = true;
+    script.defer = true;
+    script.onload = () => {
+      setMapLoaded(true);
+      initializeMap();
+    };
+    document.head.appendChild(script);
+
+    return () => {
+      document.head.removeChild(script);
+    };
+  }, []);
+
+  // Check if user is logged in
+  useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session) {
         navigate("/dashboard");
@@ -18,6 +38,72 @@ const Index = () => {
       }
     });
   }, [navigate]);
+
+  const initializeMap = () => {
+    if (!mapRef.current || !window.google) return;
+
+    const map = new window.google.maps.Map(mapRef.current, {
+      zoom: 2,
+      center: { lat: 20, lng: 0 },
+      styles: [
+        {
+          featureType: "all",
+          elementType: "labels.text.fill",
+          stylers: [{ color: "#ffffff" }],
+        },
+        {
+          featureType: "water",
+          elementType: "geometry.fill",
+          stylers: [{ color: "#1a1a2e" }],
+        },
+        {
+          featureType: "land",
+          elementType: "geometry.fill",
+          stylers: [{ color: "#0f3460" }],
+        },
+      ],
+    });
+
+    // Add click listener to select destinations
+    map.addListener("click", (event) => {
+      const lat = event.latLng.lat();
+      const lng = event.latLng.lng();
+
+      // Create marker for selected location
+      const marker = new window.google.maps.Marker({
+        position: { lat, lng },
+        map: map,
+        title: `Selected: ${lat.toFixed(2)}, ${lng.toFixed(2)}`,
+      });
+
+      // Get place name from coordinates using Geocoder
+      const geocoder = new window.google.maps.Geocoder();
+      geocoder.geocode({ location: { lat, lng } }, (results, status) => {
+        if (status === "OK" && results[0]) {
+          const locationName = results[0].formatted_address;
+          setSelectedLocations((prev) => [
+            ...prev,
+            {
+              id: Date.now(),
+              name: locationName,
+              lat,
+              lng,
+              marker,
+            },
+          ]);
+          marker.setTitle(locationName);
+        }
+      });
+    });
+
+    // Store map instance for later use
+    mapRef.current.googleMap = map;
+  };
+
+  const clearLocations = () => {
+    selectedLocations.forEach((loc) => loc.marker.setMap(null));
+    setSelectedLocations([]);
+  };
 
   if (loading) {
     return (
@@ -90,6 +176,39 @@ const Index = () => {
               <p className="text-muted-foreground">
                 Receive personalized suggestions for flights, hotels, and attractions. Your profile auto-fills check-in details.
               </p>
+            </div>
+          </div>
+
+          {/* Interactive Map Section */}
+          <div className="mt-16 max-w-5xl mx-auto">
+            <h3 className="text-2xl font-bold text-foreground mb-6">Try It Now</h3>
+            <div className="rounded-lg overflow-hidden shadow-lg">
+              <div
+                ref={mapRef}
+                className="w-full h-96 bg-muted"
+                style={{ minHeight: "400px" }}
+              />
+            </div>
+            <div className="mt-4 flex gap-4">
+              <div>
+                <p className="text-sm text-muted-foreground mb-2">
+                  Selected Destinations: {selectedLocations.length}
+                </p>
+                <ul className="text-sm space-y-1">
+                  {selectedLocations.map((loc) => (
+                    <li key={loc.id} className="text-foreground">
+                      • {loc.name}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <Button
+                onClick={clearLocations}
+                variant="outline"
+                className="h-fit"
+              >
+                Clear Locations
+              </Button>
             </div>
           </div>
         </div>
