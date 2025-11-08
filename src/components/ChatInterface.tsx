@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from "react";
 import { User } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -19,16 +19,17 @@ interface ChatInterfaceProps {
   onLocationSelect: (location: { lat: number; lng: number; name: string }) => void;
 }
 
-const ChatInterface = ({ user, onLocationSelect }: ChatInterfaceProps) => {
+const ChatInterface = forwardRef<any, ChatInterfaceProps>(({ user, onLocationSelect }, ref) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const [conversationCreated, setConversationCreated] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (user) {
-      loadOrCreateConversation();
+      createNewConversation();
     }
   }, [user]);
 
@@ -42,74 +43,46 @@ const ChatInterface = ({ user, onLocationSelect }: ChatInterfaceProps) => {
     }
   };
 
-  const loadOrCreateConversation = async () => {
-    if (!user) return;
+  const createNewConversation = async () => {
+    if (!user || conversationCreated) return;
 
     try {
-      // Try to get active conversation
-      const { data: conversations, error: convError } = await supabase
+      const { data: newConv, error: createError } = await supabase
         .from("conversations")
-        .select("*")
-        .eq("user_id", user.id)
-        .eq("status", "active")
-        .order("created_at", { ascending: false })
-        .limit(1);
+        .insert({ 
+          user_id: user.id,
+          status: "active"
+        })
+        .select()
+        .single();
 
-      if (convError) throw convError;
+      if (createError) throw createError;
+      
+      setConversationId(newConv.id);
+      setConversationCreated(true);
 
-      let convId: string;
-      if (conversations && conversations.length > 0) {
-        convId = conversations[0].id;
-      } else {
-        // Create new conversation
-        const { data: newConv, error: createError } = await supabase
-          .from("conversations")
-          .insert({ user_id: user.id })
-          .select()
-          .single();
-
-        if (createError) throw createError;
-        convId = newConv.id;
-      }
-
-      setConversationId(convId);
-
-      // Load messages
-      const { data: msgs, error: msgError } = await supabase
-        .from("messages")
-        .select("*")
-        .eq("conversation_id", convId)
-        .order("created_at", { ascending: true });
-
-      if (msgError) throw msgError;
-
-      if (msgs && msgs.length === 0) {
-        // Add welcome message
-        const welcomeMsg = {
-          id: "welcome",
-          role: "assistant" as const,
-          content: "Hello! I'm your AI travel agent. I'll help you plan your perfect trip by asking you some questions. Where would you like to go? You can type or click on the map!",
-          created_at: new Date().toISOString(),
-        };
-        setMessages([welcomeMsg]);
-      } else {
-        setMessages(msgs as Message[]);
-      }
+      const welcomeMsg: Message = {
+        id: "welcome",
+        role: "assistant",
+        content: "Hello! I can help you plan your perfect trip. To start, where are you dreaming of going? You can tell me a city, country, or even a general region! 😊",
+        created_at: new Date().toISOString(),
+      };
+      setMessages([welcomeMsg]);
     } catch (error: any) {
-      toast.error("Failed to load conversation");
+      toast.error("Failed to create new conversation");
       console.error(error);
     }
   };
 
-  const sendMessage = async () => {
-    if (!input.trim() || !conversationId || !user) return;
+  const sendMessage = async (messageText?: string, location?: { lat: number; lng: number; name: string }) => {
+    const userMessage = messageText || input.trim();
+    
+    if (!userMessage || !conversationId || !user) return;
 
-    const userMessage = input.trim();
     setInput("");
     setLoading(true);
 
     try {
-      // Add user message to UI
       const tempUserMsg: Message = {
         id: `temp-${Date.now()}`,
         role: "user",
@@ -118,24 +91,23 @@ const ChatInterface = ({ user, onLocationSelect }: ChatInterfaceProps) => {
       };
       setMessages((prev) => [...prev, tempUserMsg]);
 
-      // Save user message
       await supabase.from("messages").insert({
         conversation_id: conversationId,
         role: "user",
         content: userMessage,
       });
 
-      // Get all messages for context
-      const { data: allMessages } = await supabase
-        .from("messages")
-        .select("role, content")
-        .eq("conversation_id", conversationId)
-        .order("created_at", { ascending: true });
+      const messageContext = messages
+        .filter(m => m.id !== "welcome")
+        .map(m => ({
+          role: m.role,
+          content: m.content
+        }));
+      messageContext.push({ role: "user", content: userMessage });
 
-      // Call AI edge function
       const { data, error } = await supabase.functions.invoke("travel-chat", {
         body: {
-          messages: allMessages || [],
+          messages: messageContext,
           conversationId,
         },
       });
@@ -151,12 +123,16 @@ const ChatInterface = ({ user, onLocationSelect }: ChatInterfaceProps) => {
 
       setMessages((prev) => [...prev, assistantMsg]);
 
-      // Save assistant message
       await supabase.from("messages").insert({
         conversation_id: conversationId,
         role: "assistant",
         content: data.response,
       });
+
+      // If location was selected, update it
+      if (location) {
+        onLocationSelect(location);
+      }
     } catch (error: any) {
       toast.error("Failed to send message");
       console.error(error);
@@ -171,6 +147,13 @@ const ChatInterface = ({ user, onLocationSelect }: ChatInterfaceProps) => {
       sendMessage();
     }
   };
+
+  // Expose sendLocationMessage for parent component
+  useImperativeHandle(ref, () => ({
+    sendLocationMessage: (message: string, location: { lat: number; lng: number; name: string }) => {
+      sendMessage(message, location);
+    },
+  }));
 
   return (
     <div className="flex flex-col h-full">
@@ -211,13 +194,15 @@ const ChatInterface = ({ user, onLocationSelect }: ChatInterfaceProps) => {
             disabled={loading}
             className="flex-1"
           />
-          <Button onClick={sendMessage} disabled={loading || !input.trim()}>
+          <Button onClick={() => sendMessage()} disabled={loading || !input.trim()}>
             <Send className="h-4 w-4" />
           </Button>
         </div>
       </div>
     </div>
   );
-};
+});
+
+ChatInterface.displayName = "ChatInterface";
 
 export default ChatInterface;
