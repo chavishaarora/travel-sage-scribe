@@ -16,6 +16,58 @@ function createGoogleMapsUrl(placeName: string, destination: string): string {
   return `https://www.google.com/maps/search/${encodedQuery}`;
 }
 
+// Helper function to get month number from month name
+function getMonthNumber(monthName: string): string {
+  const months: { [key: string]: string } = {
+    january: "01", jan: "01",
+    february: "02", feb: "02",
+    march: "03", mar: "03",
+    april: "04", apr: "04",
+    may: "05",
+    june: "06", jun: "06",
+    july: "07", jul: "07",
+    august: "08", aug: "08",
+    september: "09", sep: "09", sept: "09",
+    october: "10", oct: "10",
+    november: "11", nov: "11",
+    december: "12", dec: "12"
+  };
+  return months[monthName.toLowerCase()] || "01";
+}
+
+// Helper function to normalize dates to YYYY-MM-DD format
+function normalizeDate(dateStr: string): string {
+  try {
+    // If already in YYYY-MM-DD format, return as is
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      return dateStr;
+    }
+    
+    // Try to parse and format
+    const date = new Date(dateStr);
+    if (!isNaN(date.getTime())) {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
+    
+    // Fallback to current date
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  } catch (e) {
+    // Return current date on error
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+}
+
 // Enhanced pattern to capture MORE activity mentions
 function parseRecommendationsWithLinks(
   response: string,
@@ -98,10 +150,10 @@ async function searchHotels(
     }
     resultData.destination = apiClient.getDestinationName();
 
-    // 5. Get Filters (Step 2 in Python - optional, for count)
+    // 5. Get Filters (Step 2 - optional, for count)
     await apiClient.getFilters();
 
-    // 6. Search Hotels (Step 3 in Python)
+    // 6. Search Hotels (Step 3)
     const hotelSearchResult = await apiClient.searchHotels();
     if (
       !hotelSearchResult || !hotelSearchResult.data ||
@@ -119,18 +171,18 @@ async function searchHotels(
     resultData.booking_hotel_id = hotelId;
     resultData.hotel_name = firstHotel.property?.name ?? "N/A";
     resultData.hotel_description = firstHotel.accessibilityLabel ?? "N/A";
-
+    
     // Safely extract price
     const priceBreakdown = firstHotel.property?.priceBreakdown?.grossPrice;
     if (priceBreakdown) {
       resultData.price = priceBreakdown.value ?? 0;
       resultData.currency = priceBreakdown.currency ?? "N/A";
     }
-
+    
     resultData.hotel_photo_url = firstHotel.property?.photoUrls ?? [];
     console.log("--- First Hotel Found & Data Collected ---");
 
-    // 8. Get Hotel Details (Step 4 in Python - for room photo)
+    // 8. Get Hotel Details (Step 4 - for room photo)
     const detailsResult = await apiClient.getHotelDetails(hotelId);
     if (detailsResult && detailsResult.data) {
       const rooms = detailsResult.data.rooms;
@@ -139,12 +191,12 @@ async function searchHotels(
           const firstRoomId = Object.keys(rooms)[0];
           const firstRoomData = rooms[firstRoomId];
           const photosList = firstRoomData?.photos ?? [];
-
+          
           for (const photo of photosList) {
             if (photo.url_max1280) {
               resultData.room_photo_url = photo.url_max1280;
               console.log("✅ Extracted first room photo URL.");
-              break; // Stop after finding the first one
+              break;
             }
           }
         } catch (e) {
@@ -198,202 +250,187 @@ serve(async (req) => {
     const hasFlexibility = conversationData.date_flexibility;
     const hasConfirmed = conversationData.confirmed;
 
+    // Debug logging
+    console.log("=== CONVERSATION STATE ===");
+    console.log("hasDestination:", hasDestination);
+    console.log("hasDates:", hasDates);
+    console.log("hasBudget:", hasBudget);
+    console.log("hasConfirmed:", hasConfirmed);
+    console.log("========================");
+
     // Build system prompt based on conversation stage
-    let systemPrompt = `You are an intelligent AI travel agent. Your goal is to help users plan their perfect trip by gathering information step by step.
+    let systemPrompt = `You are an intelligent AI travel agent. Your goal is to help users plan their perfect trip by gathering information and providing real hotel recommendations from Booking.com.
 
 CONVERSATION STAGE RULES:
 `;
 
-    if (!hasOrigin) {
+    // Check if we have enough info to search for hotels
+    const canSearchHotels = hasDestination && hasDates && hasBudget;
+
+    if (!hasDestination) {
       systemPrompt += `
-STAGE 1: NO ORIGIN YET
-- Start by asking where they'll be traveling FROM (their origin city/country)
-- Be friendly and explain this helps with flight planning and travel time considerations
-- Do NOT ask about destination or other details yet
-- KEEP YOUR RESPONSE TO MAX 3 SENTENCES`;
-    } else if (!hasDestination) {
-      systemPrompt += `
-STAGE 2: NO DESTINATION YET (Origin: ${hasOrigin})
-- Now ask about their preferred weather/climate (tropical, temperate, cold, dry, rainy, etc.)
-- Based on their weather preference, suggest 2-3 specific destinations
-- Ask which destination appeals to them
-- Do NOT ask about activities or budget yet
-- KEEP YOUR RESPONSE TO MAX 3 SENTENCES`;
-    } else if (!hasWeatherPreference) {
-      systemPrompt += `
-STAGE 3: DESTINATION SELECTED (Origin: ${hasOrigin}, Destination: ${hasDestination})
-- Confirm the selected destination
-- Ask about types of activities they're interested in:
-  * Passive/relaxing (beach, spa, cultural tours, museums)
-  * Active (hiking, water sports, adventure activities)
-  * Mix of both
-- Do NOT ask about budget or dates yet
-- KEEP YOUR RESPONSE TO MAX 3 SENTENCES`;
-    } else if (!hasActivities) {
-      systemPrompt += `
-STAGE 4: ACTIVITIES NOT YET SPECIFIED
-- Ask about the types of activities they're interested in:
-  * Passive/relaxing (beach, spa, cultural tours, museums)
-  * Active (hiking, water sports, adventure activities)
-  * Mix of both
-- Acknowledge their destination preference
-- Do NOT ask about budget or dates yet
-- KEEP YOUR RESPONSE TO MAX 3 SENTENCES`;
-    } else if (!hasBudget) {
-      systemPrompt += `
-STAGE 5: BUDGET NOT SET
-- Ask for their total budget for the entire trip
-- Then ask how they want to allocate it:
-  * What % should go to accommodation?
-  * What % should go to flights?
-  * What % should go to activities?
-  * Make sure it adds up to 100%
-- Be conversational and help them think through allocation
-- KEEP YOUR RESPONSE TO MAX 3 SENTENCES`;
-    } else if (!hasBudgetAllocation) {
-      systemPrompt += `
-STAGE 6: ALLOCATE BUDGET
-- They have a total budget of: ${conversation?.budget}
-- Ask them to allocate their budget across:
-  * Accommodation (hotels)
-  * Flights
-  * Activities
-- Help them decide on reasonable splits
-- Confirm the total equals their budget
-- KEEP YOUR RESPONSE TO MAX 3 SENTENCES`;
+STAGE 1: GET DESTINATION
+- Ask where they want to travel
+- Be friendly and conversational
+- KEEP YOUR RESPONSE TO MAX 2 SENTENCES`;
     } else if (!hasDates) {
       systemPrompt += `
-STAGE 7: DATES NOT SET
-- Ask for their preferred travel dates (start and end)
-- Ask if they have flexibility with dates (yes/no/somewhat)
-- Explain how flexibility can affect prices
-- KEEP YOUR RESPONSE TO MAX 3 SENTENCES`;
-    } else if (!hasFlexibility) {
+STAGE 2: GET DATES
+- Ask for their travel dates (check-in and check-out)
+- KEEP YOUR RESPONSE TO MAX 2 SENTENCES`;
+    } else if (!hasBudget) {
       systemPrompt += `
-STAGE 8: CHECK DATE FLEXIBILITY
-- Ask if they're flexible with their dates (strictly booked or can move ±3-7 days?)
-- This helps with finding better flight and hotel deals
-- KEEP YOUR RESPONSE TO MAX 3 SENTENCES`;
-    } else if (!hasConfirmed) {
+STAGE 3: GET BUDGET
+- Ask for their budget for accommodation
+- KEEP YOUR RESPONSE TO MAX 2 SENTENCES`;
+    } else if (canSearchHotels) {
       systemPrompt += `
-STAGE 9: CONFIRMATION - REVIEW ALL COLLECTED DATA
-Show the user ALL the information collected and ask for confirmation:
-
-Format it like this:
-"Let me confirm your trip details:
-🌍 Origin: ${hasOrigin}
-✈️ Destination: ${hasDestination}
-🎯 Activities: ${hasActivities}
-💰 Budget: ${hasBudget}
-📅 Dates: ${hasDates}
-🔄 Flexibility: ${hasFlexibility}
-
-Is this correct? Reply 'yes' to proceed with activity recommendations, or let me know what to change."
-
-IMPORTANT: Do NOT provide any recommendations yet. Just confirm the data.
-KEEP YOUR RESPONSE CONCISE - just show the data and ask for confirmation.`;
-    } else {
-      systemPrompt += `
-STAGE 10: GENERATE ACTIVITY RECOMMENDATIONS
+STAGE 4: PROVIDE HOTEL RECOMMENDATIONS
 Current Trip Details:
-- Origin: ${hasOrigin}
 - Destination: ${hasDestination}
-- Activities Preference: ${hasActivities}
-- Total Budget: ${hasBudget}
 - Dates: ${hasDates}
-- Flexibility: ${hasFlexibility}
+- Budget: ${hasBudget}`;
 
-CRITICAL INSTRUCTIONS FOR ACTIVITY RECOMMENDATIONS:
+      // Parse dates from the user's input
+      let arrivalDate = "";
+      let departureDate = "";
+      
+      // Try to extract dates from the dates string
+      if (hasDates) {
+        // Try multiple date formats
+        const dateMatch = hasDates.match(/(\d{4}-\d{2}-\d{2})|(\d{1,2}[\/-]\d{1,2}[\/-]\d{4})|(\w+ \d{1,2}(?:st|nd|rd|th)?(?:-| to )?\d{1,2}(?:st|nd|rd|th)?)/gi);
+        
+        if (dateMatch && dateMatch.length >= 2) {
+          // Found two dates
+          arrivalDate = dateMatch[0];
+          departureDate = dateMatch[1];
+        } else if (dateMatch && dateMatch.length === 1) {
+          // Only one date found, assume it's arrival and add 4 days
+          arrivalDate = dateMatch[0];
+          const arrival = new Date(arrivalDate);
+          arrival.setDate(arrival.getDate() + 4);
+          departureDate = arrival.toISOString().split('T')[0];
+        } else {
+          // Try to parse text like "January 3rd to 7th"
+          const monthMatch = hasDates.match(/(\w+)\s+(\d{1,2})(?:st|nd|rd|th)?\s+(?:to|-)\s+(\d{1,2})(?:st|nd|rd|th)?/i);
+          if (monthMatch) {
+            const month = monthMatch[1];
+            const day1 = monthMatch[2];
+            const day2 = monthMatch[3];
+            const year = new Date().getFullYear();
+            arrivalDate = `${year}-${getMonthNumber(month)}-${day1.padStart(2, '0')}`;
+            departureDate = `${year}-${getMonthNumber(month)}-${day2.padStart(2, '0')}`;
+          } else {
+            // Fallback: use dates 30 days from now
+            const now = new Date();
+            now.setDate(now.getDate() + 30);
+            arrivalDate = now.toISOString().split('T')[0];
+            now.setDate(now.getDate() + 4);
+            departureDate = now.toISOString().split('T')[0];
+          }
+        }
+      }
 
-1. **ONLY ACTIVITIES** - Do NOT recommend hotels or flights (they will be added later via booking API)
+      // Ensure dates are in YYYY-MM-DD format
+      arrivalDate = normalizeDate(arrivalDate);
+      departureDate = normalizeDate(departureDate);
 
-2. **FORMAT FOR EACH ACTIVITY:**
-   - ONE sentence description maximum
-   - Include the action verb (Visit, Explore, Dine at, etc.)
-   - Add a real, working link to the official website or a reliable source (TripAdvisor, Google, official tourism site)
-   - Keep it minimal - users can click to learn more
+      // Get accommodation budget - extract number from budget string
+      let budgetMax = 1000; // default
+      if (hasBudget) {
+        const budgetMatch = hasBudget.match(/(\d+)/);
+        if (budgetMatch) {
+          budgetMax = parseInt(budgetMatch[1]);
+        }
+      }
 
-3. **EXAMPLE FORMAT:**
-   Day 1:
-   - Visit Louvre Museum - Home to the Mona Lisa and 35,000 artworks
-     🔗 https://www.louvre.fr
-   
-   - Dine at Le Comptoir du Relais - Classic French bistro in Saint-Germain
-     🔗 https://www.tripadvisor.com/Restaurant_Review-g187147-d719386
+      // Search for hotels using the Booking.com API
+      let hotelRecommendation = "";
+      console.log(`🔍 Searching hotels for ${hasDestination} from ${arrivalDate} to ${departureDate}, max price: ${budgetMax}`);
+      
+      const hotelData = await searchHotels(
+        hasDestination, 
+        arrivalDate, 
+        departureDate, 
+        budgetMax
+      );
 
-   - Explore Eiffel Tower - Iconic landmark with stunning city views
-     🔗 https://www.toureiffel.paris
+      if (hotelData) {
+        console.log("✅ Successfully found a hotel:", hotelData.hotel_name);
+        
+        // Create a direct booking link
+        const bookingUrl = `https://www.booking.com/hotel/xx/${hotelData.booking_hotel_id}.html?checkin=${arrivalDate}&checkout=${departureDate}`;
+        
+        // Add the hotel info to the AI's prompt
+        hotelRecommendation = `
 
-4. **REQUIREMENTS:**
-   - Create day-by-day itinerary (2-4 activities per day)
-   - Match their activity preference (${hasActivities})
-   - Include breakfast/lunch/dinner spots
-   - Add cultural sites, attractions, and experiences
-   - Each activity = 1 sentence + 1 link
-   - Use real, clickable URLs (no placeholders)
-   - Prioritize official websites, then TripAdvisor, Google Maps, or tourism sites
+🏨 **REAL HOTEL FROM BOOKING.COM:**
 
-5. **STAY CONCISE:**
-   - No long descriptions
-   - No bullet point explanations
-   - Just: Activity name + one sentence + link
-   - Let the links do the talking
+You MUST include this exact hotel recommendation in your response:
 
-6. **DO NOT INCLUDE:**
-   - Hotel recommendations
-   - Flight details
-   - Transportation between cities
-   - Lengthy background information
+**${hotelData.hotel_name}**
+📍 Location: ${hotelData.destination}
+💰 Price: ${hotelData.currency} ${hotelData.price.toFixed(2)} for the entire stay (${arrivalDate} to ${departureDate})
+📝 ${hotelData.hotel_description}
+🔗 Book now: ${bookingUrl}
+${hotelData.hotel_photo_url.length > 0 ? `📸 Photos: ${hotelData.hotel_photo_url[0]}` : ''}
 
-Remember: Short, actionable, with real links. Hotels and flights come later!`;
+INSTRUCTIONS:
+1. Start your response by saying you found a hotel on Booking.com
+2. Copy the hotel details EXACTLY as shown above
+3. Include the booking link
+4. Keep your response SHORT - just present the hotel
+5. Do NOT suggest other hotels
+6. Do NOT make up hotel names or details
+`;
+      } else {
+        console.log("❌ Hotel search failed");
+        hotelRecommendation = `
+
+⚠️ HOTEL SEARCH FAILED
+I attempted to search Booking.com but couldn't find results. Tell the user:
+- You tried searching Booking.com for ${hasDestination}
+- Suggest they visit Booking.com directly: https://www.booking.com
+- Apologize for the inconvenience
+`;
+      }
+      
+      systemPrompt += hotelRecommendation;
     }
 
     systemPrompt += `
 
 GENERAL RULES:
 - Be conversational, friendly, and helpful
-- Ask ONE main question at a time (may include sub-parts)
-- Listen carefully to what the user says
-- Extract all relevant information from their responses
-- If they mention location during conversation, note it as their destination
-- Never skip stages - gather info in order
-- Be concise - keep responses under 150 words for stage transitions
+- Ask ONE question at a time
+- Extract information from user responses
+- Once you have destination, dates, and budget, provide the Booking.com hotel
 
 CRITICAL - INFORMATION EXTRACTION:
-After each user response, you MUST extract structured data and return it in a special JSON block at the END of your message.
+After each user response, extract structured data and return it at the END of your message.
 Format: |||EXTRACT|||{json}|||END|||
 
-Extract these fields when mentioned by the user:
+Extract these fields:
 {
-  "origin": "string | null",
   "destination": "string | null",
-  "weather_preference": "tropical | temperate | cold | dry | null",
-  "activities": "passive | active | mixed | null",
-  "budget": "number | null",
-  "budget_allocation": {"accommodation": number, "flights": number, "activities": number} | null,
-  "date_start": "string | null",
-  "date_end": "string | null",
-  "date_flexibility": "flexible | strict | null"
+  "dates": "string | null",
+  "budget": "string | null"
 }
 
 Examples:
-User: "I'm traveling from New York"
-Your response: "[friendly acknowledgment]
-|||EXTRACT|||{"origin": "New York"}|||END|||"
+User: "I want to go to Oberscheinfeld"
+|||EXTRACT|||{"destination": "Oberscheinfeld"}|||END|||
 
-User: "I want to go somewhere warm and sunny"
-Your response: "[friendly message about warm destinations]
-|||EXTRACT|||{"weather_preference": "tropical"}|||END|||"
+User: "January 3rd to 7th"
+|||EXTRACT|||{"dates": "January 3rd to 7th"}|||END|||
 
-User: "Let's go to Paris in June"
-Your response: "[exciting message about Paris]
-|||EXTRACT|||{"destination": "Paris", "dates": "June"}|||END|||"
+User: "1000 euros"
+|||EXTRACT|||{"budget": "1000 euros"}|||END|||
 
-User: "I'm from London and have $3000 and want to relax at beaches"
-Your response: "[helpful message about beach destinations]
-|||EXTRACT|||{"origin": "London", "budget": 3000, "activities": "passive", "weather_preference": "tropical"}|||END|||"
+User: "Oberscheinfeld from January 3-7 with 1000 euro budget"
+|||EXTRACT|||{"destination": "Oberscheinfeld", "dates": "January 3-7", "budget": "1000 euro"}|||END|||
 
-ALWAYS include the extraction block, even if empty: |||EXTRACT|||{}|||END|||`;
+ALWAYS include the extraction block: |||EXTRACT|||{}|||END|||`;
 
     // Call OpenAI ChatGPT
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -469,32 +506,17 @@ ALWAYS include the extraction block, even if empty: |||EXTRACT|||{}|||END|||`;
     const newPreferences = { ...conversationData };
 
     // Apply extracted data to updates
-    if (extractedData.origin) {
-      newPreferences.origin = extractedData.origin;
-    }
     if (extractedData.destination) {
       updates.destination = extractedData.destination;
+      newPreferences.destination = extractedData.destination;
     }
-    if (extractedData.weather_preference) {
-      newPreferences.weather_preference = extractedData.weather_preference;
-    }
-    if (extractedData.activities) {
-      newPreferences.activities = extractedData.activities;
+    if (extractedData.dates) {
+      newPreferences.dates = extractedData.dates;
+      updates.start_date = extractedData.dates; // Store in start_date field too
     }
     if (extractedData.budget) {
-      updates.budget = extractedData.budget.toString();
-    }
-    if (extractedData.budget_allocation) {
-      newPreferences.budget_allocation = extractedData.budget_allocation;
-    }
-    if (extractedData.date_start) {
-      newPreferences.date_start = extractedData.date_start;
-    }
-    if (extractedData.date_end) {
-      newPreferences.date_end = extractedData.date_end;
-    }
-    if (extractedData.date_flexibility) {
-      newPreferences.date_flexibility = extractedData.date_flexibility;
+      updates.budget = extractedData.budget;
+      newPreferences.budget = extractedData.budget;
     }
 // Check if we just completed the final stage
     const justCompleted =
@@ -556,6 +578,7 @@ ALWAYS include the extraction block, even if empty: |||EXTRACT|||{}|||END|||`;
     
     // Update conversation with new preferences
     if (Object.keys(updates).length > 0 || Object.keys(newPreferences).length > Object.keys(conversationData).length) {
+      console.log("Updating conversation with:", updates, newPreferences);
       await supabase
         .from("conversations")
         .update({
