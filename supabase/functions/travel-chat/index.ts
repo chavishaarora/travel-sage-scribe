@@ -54,6 +54,113 @@ function parseRecommendationsWithLinks(
   return enhancedResponse;
 }
 
+async function searchHotels(
+  city: string,
+  arrival: string,
+  departure: string,
+  priceMax: number,
+): Promise<HotelResult | null> {
+  console.log(`Starting hotel search for ${city}...`);
+  try {
+    // 1. Get API credentials from environment
+    const API_HOST = Deno.env.get("BOOKING_API_HOST")!;
+    const API_KEY = Deno.env.get("BOOKING_API_KEY")!;
+
+    if (!API_HOST || !API_KEY) {
+      console.error("Booking API Host or Key is not set in environment.");
+      return null;
+    }
+
+    // 2. Initialize the API client with the user's data
+    const apiClient = new BookingComAPI(API_HOST, API_KEY, {
+      CITY_QUERY: city,
+      ARRIVAL_DATE: arrival,
+      DEPARTURE_DATE: departure,
+      PRICE_MAX: priceMax,
+    });
+
+    // 3. Initialize the final result object
+    const resultData: HotelResult = {
+      destination: city, // Default, will be updated
+      hotel_name: "N/A",
+      hotel_description: "N/A",
+      price: 0,
+      currency: "N/A",
+      booking_hotel_id: 0,
+      hotel_photo_url: [],
+      room_photo_url: "N/A",
+    };
+
+    // 4. Search Destination (Step 1 in Python)
+    if (!await apiClient.searchDestination()) {
+      console.log("Final result not available: destination search failed.");
+      return null;
+    }
+    resultData.destination = apiClient.getDestinationName();
+
+    // 5. Get Filters (Step 2 in Python - optional, for count)
+    await apiClient.getFilters();
+
+    // 6. Search Hotels (Step 3 in Python)
+    const hotelSearchResult = await apiClient.searchHotels();
+    if (
+      !hotelSearchResult || !hotelSearchResult.data ||
+      !hotelSearchResult.data.hotels ||
+      hotelSearchResult.data.hotels.length === 0
+    ) {
+      console.log("Final result not available: hotel search failed or no results.");
+      return null;
+    }
+
+    const firstHotel = hotelSearchResult.data.hotels[0];
+    const hotelId = firstHotel.hotel_id;
+
+    // 7. Extract data from hotel search
+    resultData.booking_hotel_id = hotelId;
+    resultData.hotel_name = firstHotel.property?.name ?? "N/A";
+    resultData.hotel_description = firstHotel.accessibilityLabel ?? "N/A";
+
+    // Safely extract price
+    const priceBreakdown = firstHotel.property?.priceBreakdown?.grossPrice;
+    if (priceBreakdown) {
+      resultData.price = priceBreakdown.value ?? 0;
+      resultData.currency = priceBreakdown.currency ?? "N/A";
+    }
+
+    resultData.hotel_photo_url = firstHotel.property?.photoUrls ?? [];
+    console.log("--- First Hotel Found & Data Collected ---");
+
+    // 8. Get Hotel Details (Step 4 in Python - for room photo)
+    const detailsResult = await apiClient.getHotelDetails(hotelId);
+    if (detailsResult && detailsResult.data) {
+      const rooms = detailsResult.data.rooms;
+      if (rooms) {
+        try {
+          const firstRoomId = Object.keys(rooms)[0];
+          const firstRoomData = rooms[firstRoomId];
+          const photosList = firstRoomData?.photos ?? [];
+
+          for (const photo of photosList) {
+            if (photo.url_max1280) {
+              resultData.room_photo_url = photo.url_max1280;
+              console.log("✅ Extracted first room photo URL.");
+              break; // Stop after finding the first one
+            }
+          }
+        } catch (e) {
+          console.log("⚠️ No rooms found in details data.");
+        }
+      }
+    }
+
+    console.log("\n🎉 Final Hotel Dictionary Complete.");
+    return resultData;
+  } catch (error) {
+    console.error("Error in searchHotels function:", error);
+    return null;
+  }
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -194,59 +301,8 @@ Current Trip Details:
 - Activities Preference: ${hasActivities}
 - Total Budget: ${hasBudget}
 - Dates: ${hasDates}
-- Flexibility: ${hasFlexibility}`;
+- Flexibility: ${hasFlexibility}
 
-<<<<<<< HEAD
-      let hotelRecommendation = "";
-      
-      // Let's assume you have parsed dates and budget
-      const exampleArrival = "2025-11-20"; // You need to get this from `hasDates`
-      const exampleDeparture = "2025-11-25"; // You need to get this from `hasDates`
-      const budgetMax = conversationData.budget_allocation?.accommodation ?? 1000;
-
-      // Call your new function!
-      const hotelData = await searchHotels(
-        hasDestination, 
-        exampleArrival, 
-        exampleDeparture, 
-        budgetMax
-      );
-
-      if (hotelData) {
-        console.log("Successfully found a hotel:", hotelData.hotel_name);
-        // Add the hotel info to the AI's prompt!
-        hotelRecommendation = `
-RECOMMENDED HOTEL:
-Based on your budget and destination, I found a great option:
-- Name: ${hotelData.hotel_name}
-- Price: Around ${hotelData.currency} ${hotelData.price}
-- Description: ${hotelData.hotel_description}
-Please include this hotel as a top suggestion in the itinerary mentioning that it's found on BAZOOKA, a local search tool.
-`;
-      }
-      
-      systemPrompt += hotelRecommendation; // Add hotel data to the prompt
-      
-// --- END: EXAMPLE ---
-
-systemPrompt += `INSTRUCTIONS FOR GENERATING RECOMMENDATIONS:
-1. Create a day-by-day itinerary based on their preferences
-2. VERY IMPORTANT - For EACH activity, restaurant, or attraction mentioned:
-   - Use SPECIFIC place names (not generic descriptions)
-   - Include descriptive verbs from this list:
-     Visit, Dine at, Explore, Try, Experience, Enjoy, Go to, See, Check out,
-     Discover, Browse, Sample, Hike, Trek, Climb, Tour, Take, Do, Participate in,
-     Attend, Join, Relax at, Swim at, Kayak in, Bike through, Walk to, Drive to,
-     Sail on, Surf at, Ski on, Watch, Taste, Drink, Eat at, Have, Book, Reserve,
-     Take a tour, Go on, View, Catch, Ride, Admire, Appreciate, Stroll through,
-     Wander in
-   - Examples of GOOD format:
-     * "Visit Louvre Museum - €15/person ⭐ 4.6/5"
-     * "Dine at L'Astrance Restaurant - €120/person ⭐ 4.5/5"
-     * "Trek the GR20 Trail - Full day experience ⭐ 4.8/5"
-     * "Swim at Palombaggia Beach - Free ⭐ 4.7/5"
-     * "Kayak in Scandola Nature Reserve - €50/person ⭐ 4.9/5"
-=======
 CRITICAL INSTRUCTIONS FOR ACTIVITY RECOMMENDATIONS:
 
 1. **ONLY ACTIVITIES** - Do NOT recommend hotels or flights (they will be added later via booking API)
@@ -261,7 +317,6 @@ CRITICAL INSTRUCTIONS FOR ACTIVITY RECOMMENDATIONS:
    Day 1:
    - Visit Louvre Museum - Home to the Mona Lisa and 35,000 artworks
      🔗 https://www.louvre.fr
->>>>>>> 8afd61e301fddf501eb1443138a194d060e7661d
    
    - Dine at Le Comptoir du Relais - Classic French bistro in Saint-Germain
      🔗 https://www.tripadvisor.com/Restaurant_Review-g187147-d719386
@@ -316,7 +371,8 @@ Extract these fields when mentioned by the user:
   "activities": "passive | active | mixed | null",
   "budget": "number | null",
   "budget_allocation": {"accommodation": number, "flights": number, "activities": number} | null,
-  "dates": "string | null",
+  "date_start": "string | null",
+  "date_end": "string | null",
   "date_flexibility": "flexible | strict | null"
 }
 
@@ -431,13 +487,73 @@ ALWAYS include the extraction block, even if empty: |||EXTRACT|||{}|||END|||`;
     if (extractedData.budget_allocation) {
       newPreferences.budget_allocation = extractedData.budget_allocation;
     }
-    if (extractedData.dates) {
-      newPreferences.dates = extractedData.dates;
+    if (extractedData.date_start) {
+      newPreferences.date_start = extractedData.date_start;
+    }
+    if (extractedData.date_end) {
+      newPreferences.date_end = extractedData.date_end;
     }
     if (extractedData.date_flexibility) {
       newPreferences.date_flexibility = extractedData.date_flexibility;
     }
+// Check if we just completed the final stage
+    const justCompleted =
+      !hasFlexibility && // We were on the last step
+      newPreferences.date_flexibility; // And we just got the answer
 
+    if (justCompleted) {
+      console.log("All info collected, searching for hotels...");
+      try {
+        // 1. Get data from the *newly updated* preferences
+        const city = newPreferences.destination;
+        const startDate = newPreferences.date_start;
+        const endDate = newPreferences.date_end;
+        const totalBudget = parseFloat(newPreferences.budget);
+        const accomPercent = newPreferences.budget_allocation.accommodation;
+        const accomBudget = totalBudget * (accomPercent / 100);
+
+        // 2. Call the search function
+        const hotelData = await searchHotels(
+          city,
+          startDate,
+          endDate,
+          accomBudget,
+        );
+
+        if (hotelData) {
+          // 3. Transform data to match 'travel_suggestions' table
+          const suggestionToInsert = {
+            conversation_id: conversationId,
+            type: "hotel",
+            title: hotelData.hotel_name,
+            description: hotelData.hotel_description,
+            price: hotelData.price,
+            rating: 0, // Your API result doesn't have a rating, set to 0
+            image_url: hotelData.room_photo_url || hotelData.hotel_photo_url[0],
+            // The API doesn't return a direct booking link,
+            // so we link to the general Booking.com page or Google.
+            booking_url: `https_www.google.com/search?q=${
+              encodeURIComponent(hotelData.hotel_name + " " + hotelData.destination)
+            }`,
+            location: { address: hotelData.destination },
+          };
+
+          // 4. Save to Supabase
+          const { error } = await supabase
+            .from("travel_suggestions")
+            .insert(suggestionToInsert);
+            
+          if (error) {
+            console.error("Failed to save hotel suggestion:", error);
+          } else {
+            console.log("Successfully saved hotel suggestion to DB!");
+          }
+        }
+      } catch (e) {
+        console.error("Failed to run hotel search:", e);
+      }
+    }
+    
     // Update conversation with new preferences
     if (Object.keys(updates).length > 0 || Object.keys(newPreferences).length > Object.keys(conversationData).length) {
       await supabase
@@ -463,118 +579,3 @@ ALWAYS include the extraction block, even if empty: |||EXTRACT|||{}|||END|||`;
     });
   }
 });
-
-// --- Add this function to your index.ts file ---
-// --- You can put it right above your `serve(...)` call ---
-
-/**
- * This function performs the full hotel search flow,
- * just like the main() function in your Python script.
- */
-async function searchHotels(
-  city: string,
-  arrival: string,
-  departure: string,
-  priceMax: number,
-): Promise<HotelResult | null> {
-  console.log(`Starting hotel search for ${city}...`);
-  try {
-    // 1. Get API credentials from environment
-    const API_HOST = Deno.env.get("BOOKING_API_HOST")!;
-    const API_KEY = Deno.env.get("BOOKING_API_KEY")!;
-
-    if (!API_HOST || !API_KEY) {
-      console.error("Booking API Host or Key is not set in environment.");
-      return null;
-    }
-
-    // 2. Initialize the API client with the user's data
-    const apiClient = new BookingComAPI(API_HOST, API_KEY, {
-      CITY_QUERY: city,
-      ARRIVAL_DATE: arrival,
-      DEPARTURE_DATE: departure,
-      PRICE_MAX: priceMax,
-    });
-
-    // 3. Initialize the final result object
-    const resultData: HotelResult = {
-      destination: city, // Default, will be updated
-      hotel_name: "N/A",
-      hotel_description: "N/A",
-      price: 0,
-      currency: "N/A",
-      booking_hotel_id: 0,
-      hotel_photo_url: [],
-      room_photo_url: "N/A",
-    };
-
-    // 4. Search Destination (Step 1 in Python)
-    if (!await apiClient.searchDestination()) {
-      console.log("Final result not available: destination search failed.");
-      return null;
-    }
-    resultData.destination = apiClient.getDestinationName(); // Use the new getter
-
-    // 5. Get Filters (Step 2 in Python - optional, for count)
-    await apiClient.getFilters();
-
-    // 6. Search Hotels (Step 3 in Python)
-    const hotelSearchResult = await apiClient.searchHotels();
-    if (
-      !hotelSearchResult || !hotelSearchResult.data ||
-      !hotelSearchResult.data.hotels ||
-      hotelSearchResult.data.hotels.length === 0
-    ) {
-      console.log("Final result not available: hotel search failed or no results.");
-      return null;
-    }
-
-    const firstHotel = hotelSearchResult.data.hotels[0];
-    const hotelId = firstHotel.hotel_id;
-
-    // 7. Extract data from hotel search
-    resultData.booking_hotel_id = hotelId;
-    resultData.hotel_name = firstHotel.property?.name ?? "N/A";
-    resultData.hotel_description = firstHotel.accessibilityLabel ?? "N/A";
-    
-    // Safely extract price
-    const priceBreakdown = firstHotel.property?.priceBreakdown?.grossPrice;
-    if (priceBreakdown) {
-      resultData.price = priceBreakdown.value ?? 0;
-      resultData.currency = priceBreakdown.currency ?? "N/A";
-    }
-    
-    resultData.hotel_photo_url = firstHotel.property?.photoUrls ?? [];
-    console.log("--- First Hotel Found & Data Collected ---");
-
-    // 8. Get Hotel Details (Step 4 in Python - for room photo)
-    const detailsResult = await apiClient.getHotelDetails(hotelId);
-    if (detailsResult && detailsResult.data) {
-      const rooms = detailsResult.data.rooms;
-      if (rooms) {
-        try {
-          const firstRoomId = Object.keys(rooms)[0];
-          const firstRoomData = rooms[firstRoomId];
-          const photosList = firstRoomData?.photos ?? [];
-          
-          for (const photo of photosList) {
-            if (photo.url_max1280) {
-              resultData.room_photo_url = photo.url_max1280;
-              console.log("✅ Extracted first room photo URL.");
-              break; // Stop after finding the first one
-            }
-          }
-        } catch (e) {
-          console.log("⚠️ No rooms found in details data.");
-        }
-      }
-    }
-
-    console.log("\n🎉 Final Hotel Dictionary Complete.");
-    return resultData;
-
-  } catch (error) {
-    console.error("Error in searchHotels function:", error);
-    return null;
-  }
-}

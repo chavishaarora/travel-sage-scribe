@@ -1,9 +1,17 @@
 import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+// We comment out the supabase client since we're not using it for this test
+// import { supabase } from "@/integrations/supabase/client";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Plane, Hotel, MapPin, Star, ExternalLink, Utensils } from "lucide-react";
+import {
+  Plane,
+  Hotel,
+  MapPin,
+  Star,
+  ExternalLink,
+  Utensils,
+} from "lucide-react";
 
 interface Suggestion {
   id: string;
@@ -34,8 +42,49 @@ const SuggestionsPanel = () => {
   const [loading, setLoading] = useState(true);
   const [destination, setDestination] = useState<string>("");
 
+  // 1. --- ORIGINAL LOGIC COMMENTED OUT FOR DEBUGGING ---
+  /*
   useEffect(() => {
     loadSuggestions();
+
+    // 2. Set up Supabase Realtime listener
+    const channel = supabase
+      .channel("travel-suggestions")
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "travel_suggestions",
+        },
+        (payload) => {
+          console.log("New suggestion received!", payload.new);
+
+          // Convert the new record to a Suggestion
+          const newSuggestion = payload.new as Suggestion;
+
+          // Add the new suggestion to the correct group
+          setSuggestions((prev) => {
+            const newGrouped = { ...prev };
+            if (newSuggestion.type === "hotel") {
+              newGrouped.hotels = [newSuggestion, ...prev.hotels];
+            } else if (newSuggestion.type === "flight") {
+              newGrouped.flights = [newSuggestion, ...prev.flights];
+            } else if (newSuggestion.type === "restaurant") {
+              newGrouped.restaurants = [newSuggestion, ...prev.restaurants];
+            } else {
+              newGrouped.attractions = [newSuggestion, ...prev.attractions];
+            }
+            return newGrouped;
+          });
+        },
+      )
+      .subscribe();
+
+    // 3. Clean up the channel when the component unmounts
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   const loadSuggestions = async () => {
@@ -93,8 +142,56 @@ const SuggestionsPanel = () => {
       setLoading(false);
     }
   };
+  */
+  // --- END OF COMMENTED OUT LOGIC ---
+
+  // 2. --- NEW useEffect TO LOAD STATIC MOCK DATA ---
+  useEffect(() => {
+    console.log("DEBUG MODE: Loading static mock data...");
+
+    // This is the data structure your 'index.ts' *should* create
+    const mockHotelSuggestion: Suggestion = {
+      id: "mock-hotel-123",
+      type: "hotel",
+      title: "The Grand Mock Hotel",
+      description:
+        "A beautiful, static hotel used for debugging the UI. Features include a non-functional booking link and a lovely placeholder image.",
+      price: 249.99,
+      rating: 4.7,
+      image_url: "https://placehold.co/600x400/EEE/31343C?text=Mock+Hotel+Image",
+      booking_url: "https://www.google.com/search?q=The+Grand+Mock+Hotel+Paris",
+      location: { address: "Paris, France" },
+    };
+
+    const mockAttractionSuggestion: Suggestion = {
+      id: "mock-attraction-456",
+      type: "attraction",
+      title: "Mock de Triomphe",
+      description: "A stunning arch, rendered statically for your viewing pleasure. No tickets required.",
+      price: 15.00,
+      rating: 4.9,
+      image_url: "https://placehold.co/600x400/DDD/31343C?text=Mock+Attraction",
+      booking_url: "https://www.google.com/search?q=Arc+de+Triomphe+Paris",
+      location: { address: "Paris, France" },
+    };
+    
+    // Set the state with this mock data
+    setSuggestions({
+      flights: [],
+      hotels: [mockHotelSuggestion],
+      attractions: [mockAttractionSuggestion],
+      restaurants: [],
+    });
+
+    setDestination("Paris, France");
+    setLoading(false); // We're done "loading"
+  }, []);
+  // The empty array [] ensures this runs only ONCE when the component mounts
+
+  // --- ALL RENDER FUNCTIONS AND RETURN STATEMENTS BELOW ARE UNCHANGED ---
 
   const getIcon = (type: string) => {
+    // ... (This function remains exactly the same)
     switch (type) {
       case "flight":
         return <Plane className="h-5 w-5" />;
@@ -111,11 +208,13 @@ const SuggestionsPanel = () => {
 
   // Create Google Maps search link
   const createGoogleMapsLink = (title: string) => {
+    // ... (This function remains exactly the same)
     const query = `${title} ${destination}`;
     return `https://www.google.com/maps/search/${encodeURIComponent(query)}`;
   };
 
   const renderSuggestionGroup = (title: string, items: Suggestion[]) => {
+    // ... (This function remains exactly the same)
     if (items.length === 0) return null;
 
     return (
@@ -125,7 +224,10 @@ const SuggestionsPanel = () => {
         </h4>
         <div className="space-y-3">
           {items.map((item) => (
-            <Card key={item.id} className="p-3 shadow-sm hover:shadow-md transition-shadow">
+            <Card
+              key={item.id}
+              className="p-3 shadow-sm hover:shadow-md transition-shadow"
+            >
               <div className="flex gap-3">
                 {item.image_url && (
                   <img
@@ -142,11 +244,14 @@ const SuggestionsPanel = () => {
                         {item.title}
                       </h5>
                     </div>
-                    <Badge variant="secondary" className="capitalize text-xs flex-shrink-0">
+                    <Badge
+                      variant="secondary"
+                      className="capitalize text-xs flex-shrink-0"
+                    >
                       {item.type}
                     </Badge>
                   </div>
-                  
+
                   {item.description && (
                     <p className="text-xs text-muted-foreground line-clamp-2 mt-1">
                       {item.description}
@@ -219,6 +324,7 @@ const SuggestionsPanel = () => {
   };
 
   if (loading) {
+    // ... (This return block remains exactly the same)
     return (
       <div className="h-full flex items-center justify-center p-8">
         <p className="text-muted-foreground">Loading suggestions...</p>
@@ -227,12 +333,14 @@ const SuggestionsPanel = () => {
   }
 
   const hasAnySuggestions =
+    // ... (This logic remains exactly the same)
     suggestions.flights.length > 0 ||
     suggestions.hotels.length > 0 ||
     suggestions.attractions.length > 0 ||
     suggestions.restaurants.length > 0;
 
   if (!hasAnySuggestions) {
+    // ... (This return block remains exactly the same)
     return (
       <div className="h-full flex flex-col items-center justify-center p-8 text-center">
         <MapPin className="h-12 w-12 text-muted-foreground mb-4" />
@@ -240,13 +348,15 @@ const SuggestionsPanel = () => {
           No Suggestions Yet
         </h3>
         <p className="text-sm text-muted-foreground max-w-sm">
-          Chat with the AI agent to complete your trip details. Once your itinerary is ready,
-          personalized recommendations for flights, hotels, attractions, and restaurants will appear here.
+          Chat with the AI agent to complete your trip details. Once your
+          itinerary is ready, personalized recommendations for flights, hotels,
+          attractions, and restaurants will appear here.
         </p>
       </div>
     );
   }
 
+  // ... (This final return block remains exactly the same)
   return (
     <div className="h-full overflow-auto p-4">
       <h3 className="text-lg font-bold text-foreground mb-6">
@@ -260,13 +370,17 @@ const SuggestionsPanel = () => {
 
       {renderSuggestionGroup("✈️ Flights", suggestions.flights)}
       {renderSuggestionGroup("🏨 Hotels", suggestions.hotels)}
-      {renderSuggestionGroup("🎭 Attractions & Activities", suggestions.attractions)}
+      {renderSuggestionGroup(
+        "🎭 Attractions & Activities",
+        suggestions.attractions,
+      )}
       {renderSuggestionGroup("🍽️ Restaurants", suggestions.restaurants)}
 
       <div className="mt-8 p-4 bg-muted rounded-lg">
         <p className="text-xs text-muted-foreground">
-          💡 Tip: Click the "Maps" button on any recommendation to view it on Google Maps and see
-          nearby options, reviews, opening hours, and directions.
+          💡 Tip: Click the "Maps" button on any recommendation to view it on
+          Google Maps and see nearby options, reviews, opening hours, and
+          directions.
         </p>
       </div>
     </div>
