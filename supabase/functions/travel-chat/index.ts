@@ -15,10 +15,10 @@ serve(async (req) => {
 
   try {
     const { messages, conversationId } = await req.json();
-    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+    const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
 
-    if (!LOVABLE_API_KEY) {
-      throw new Error("LOVABLE_API_KEY is not configured");
+    if (!OPENAI_API_KEY) {
+      throw new Error("OPENAI_API_KEY is not configured");
     }
 
     // Initialize Supabase client
@@ -33,51 +33,129 @@ serve(async (req) => {
       .eq("id", conversationId)
       .single();
 
-    // System prompt for the travel agent
-    const systemPrompt = `You are an intelligent AI travel agent. Your goal is to help users plan their perfect trip by:
+    // Determine the current stage of the conversation
+    const conversationData = conversation?.preferences || {};
+    const hasDestination = conversation?.destination || conversationData.destination;
+    const hasWeatherPreference = conversationData.weather_preference;
+    const hasActivities = conversationData.activities;
+    const hasBudget = conversation?.budget || conversationData.budget;
+    const hasBudgetAllocation = conversationData.budget_allocation; // { hotel, flights, activities }
+    const hasDates = conversation?.start_date || conversationData.dates;
+    const hasFlexibility = conversationData.date_flexibility;
 
-1. Asking follow-up questions to understand their needs:
-   - Destination preferences (they can also select on the map)
-   - Travel dates
-   - Budget range
-   - Number of travelers
-   - Accommodation preferences
-   - Activities and interests
+    // Build system prompt based on conversation stage
+    let systemPrompt = `You are an intelligent AI travel agent. Your goal is to help users plan their perfect trip by gathering information step by step.
 
-2. Once you have enough information, provide specific recommendations for:
-   - Flights (with estimated prices)
-   - Hotels (with ratings and price ranges)
-   - Attractions and activities
+CONVERSATION STAGE RULES:
+`;
 
-3. Be conversational, friendly, and helpful. Ask one or two questions at a time.
+    if (!hasDestination) {
+      systemPrompt += `
+STAGE 1: NO DESTINATION YET
+- First, ask about their preferred weather/climate (tropical, temperate, cold, dry, rainy, etc.)
+- Based on their weather preference, suggest 2-3 specific destinations
+- Ask which destination appeals to them
+- Do NOT ask about activities or budget yet`;
+    } else if (!hasWeatherPreference) {
+      systemPrompt += `
+STAGE 2: DESTINATION SELECTED (${hasDestination})
+- Confirm the selected destination
+- Ask about types of activities they're interested in:
+  * Passive/relaxing (beach, spa, cultural tours, museums)
+  * Active (hiking, water sports, adventure activities)
+  * Mix of both
+- Do NOT ask about budget or dates yet`;
+    } else if (!hasActivities) {
+      systemPrompt += `
+STAGE 3: ACTIVITIES NOT YET SPECIFIED
+- Ask about the types of activities they're interested in:
+  * Passive/relaxing (beach, spa, cultural tours, museums)
+  * Active (hiking, water sports, adventure activities)
+  * Mix of both
+- Acknowledge their destination preference
+- Do NOT ask about budget or dates yet`;
+    } else if (!hasBudget) {
+      systemPrompt += `
+STAGE 4: BUDGET NOT SET
+- Ask for their total budget for the entire trip
+- Then ask how they want to allocate it:
+  * What % should go to accommodation?
+  * What % should go to flights?
+  * What % should go to activities?
+  * Make sure it adds up to 100%
+- Be conversational and help them think through allocation`;
+    } else if (!hasBudgetAllocation) {
+      systemPrompt += `
+STAGE 5: ALLOCATE BUDGET
+- They have a total budget of: ${conversation?.budget}
+- Ask them to allocate their budget across:
+  * Accommodation (hotels)
+  * Flights
+  * Activities
+- Help them decide on reasonable splits
+- Confirm the total equals their budget`;
+    } else if (!hasDates) {
+      systemPrompt += `
+STAGE 6: DATES NOT SET
+- Ask for their preferred travel dates (start and end)
+- Ask if they have flexibility with dates (yes/no/somewhat)
+- Explain how flexibility can affect prices`;
+    } else if (!hasFlexibility) {
+      systemPrompt += `
+STAGE 7: CHECK DATE FLEXIBILITY
+- Ask if they're flexible with their dates (strictly booked or can move ±3-7 days?)
+- This helps with finding better flight and hotel deals`;
+    } else {
+      systemPrompt += `
+STAGE 8: ALL INFO COLLECTED
+Current Trip Details:
+- Destination: ${hasDestination}
+- Activities Preference: ${hasActivities}
+- Total Budget: ${hasBudget}
+- Budget Allocation: ${JSON.stringify(hasBudgetAllocation)}
+- Dates: ${hasDates}
+- Flexibility: ${hasFlexibility}
 
-Current conversation info:
-- Destination: ${conversation?.destination || "not specified"}
-- Budget: ${conversation?.budget || "not specified"}
-- Travelers: ${conversation?.travelers_count || "not specified"}
-- Start date: ${conversation?.start_date || "not specified"}
-- End date: ${conversation?.end_date || "not specified"}
+Now provide day-by-day activity recommendations considering:
+- Google reviews for highly-rated activities
+- Mix of the activities they're interested in
+- Budget constraints
+- Local climate and weather
 
-If the user has selected a location on the map, they will mention it in their message.`;
+PLACEHOLDER: Flight and hotel recommendations will be added via Booking API
+For now, acknowledge that you're preparing to search for flights and hotels but note that integration is pending.
 
-    // Call Lovable AI
-    const response = await fetch(
-      "https://ai.gateway.lovable.dev/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${LOVABLE_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "google/gemini-2.5-flash",
-          messages: [
-            { role: "system", content: systemPrompt },
-            ...messages,
-          ],
-        }),
-      }
-    );
+Ask if they want to proceed with booking or need any adjustments.`;
+    }
+
+    systemPrompt += `
+
+GENERAL RULES:
+- Be conversational, friendly, and helpful
+- Ask ONE main question at a time (may include sub-parts)
+- Listen carefully to what the user says
+- Extract all relevant information from their responses
+- If they mention location during conversation, note it as their destination
+- Never skip stages - gather info in order
+- Be concise - keep responses under 50 words`;
+
+    // Call OpenAI ChatGPT
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: systemPrompt },
+          ...messages,
+        ],
+        temperature: 0.7,
+        max_tokens: 500,
+      }),
+    });
 
     if (!response.ok) {
       if (response.status === 429) {
@@ -91,44 +169,149 @@ If the user has selected a location on the map, they will mention it in their me
           }
         );
       }
-      if (response.status === 402) {
+      if (response.status === 401) {
         return new Response(
           JSON.stringify({
-            error: "Payment required. Please add credits to continue.",
+            error: "Invalid API key. Please check your OpenAI configuration.",
           }),
           {
-            status: 402,
+            status: 401,
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           }
         );
       }
 
       const errorText = await response.text();
-      console.error("AI API error:", response.status, errorText);
-      throw new Error(`AI API error: ${response.status}`);
+      console.error("OpenAI API error:", response.status, errorText);
+      throw new Error(`OpenAI API error: ${response.status}`);
     }
 
     const data = await response.json();
     const aiResponse = data.choices[0].message.content;
 
-    // Parse AI response to extract structured info and update conversation
-    const lowerResponse = aiResponse.toLowerCase();
-    
-    // Simple keyword extraction for conversation updates
+    // Extract and update conversation data based on user's last message
+    const lastUserMessage = messages.filter((m: any) => m.role === "user").pop()?.content || "";
     const updates: any = {};
-    
-    if (!conversation?.destination && lowerResponse.includes("destination")) {
-      // Try to extract destination from user's last message
-      const lastUserMsg = messages.filter((m: any) => m.role === "user").pop();
-      if (lastUserMsg) {
-        updates.destination = lastUserMsg.content;
+    const newPreferences = { ...conversationData };
+
+    // Extract destination if mentioned
+    const destinationKeywords = [
+      "paris",
+      "tokyo",
+      "bali",
+      "new york",
+      "barcelona",
+      "london",
+      "dubai",
+      "thailand",
+      "thailand",
+      "italy",
+      "france",
+      "japan",
+    ];
+    if (!hasDestination) {
+      const mentioned = destinationKeywords.find((dest) =>
+        lastUserMessage.toLowerCase().includes(dest)
+      );
+      if (mentioned) {
+        updates.destination = mentioned;
       }
     }
 
-    if (Object.keys(updates).length > 0) {
+    // Extract weather preference
+    const weatherKeywords = {
+      tropical: ["tropical", "warm", "hot", "beach"],
+      temperate: ["mild", "spring", "fall", "moderate"],
+      cold: ["snow", "winter", "cold", "skiing"],
+      dry: ["dry", "desert", "sunny"],
+    };
+    if (!hasWeatherPreference) {
+      for (const [weather, keywords] of Object.entries(weatherKeywords)) {
+        if (keywords.some((kw) => lastUserMessage.toLowerCase().includes(kw))) {
+          newPreferences.weather_preference = weather;
+          break;
+        }
+      }
+    }
+
+    // Extract activities
+    const activityKeywords = {
+      passive: ["relax", "spa", "museum", "cultural", "beach", "wine"],
+      active: ["hiking", "sport", "adventure", "trek", "dive", "climb"],
+      mixed: ["mix", "both", "variety"],
+    };
+    if (!hasActivities) {
+      for (const [activity, keywords] of Object.entries(activityKeywords)) {
+        if (keywords.some((kw) => lastUserMessage.toLowerCase().includes(kw))) {
+          newPreferences.activities = activity;
+          break;
+        }
+      }
+    }
+
+    // Extract budget
+    if (!hasBudget) {
+      const budgetMatch = lastUserMessage.match(/\$?([\d,]+)/);
+      if (budgetMatch) {
+        const budgetAmount = parseInt(budgetMatch[1].replace(/,/g, ""));
+        updates.budget = budgetAmount.toString();
+      }
+    }
+
+    // Extract budget allocation
+    if (hasBudget && !hasBudgetAllocation) {
+      const percentages = lastUserMessage.match(/(\d+)%/g);
+      if (percentages && percentages.length >= 2) {
+        // Try to parse allocation
+        const allocationText = lastUserMessage.toLowerCase();
+        if (
+          allocationText.includes("hotel") &&
+          allocationText.includes("flight")
+        ) {
+          newPreferences.budget_allocation = {
+            hotel: allocationText.includes("50% hotel") ? 50 : 40,
+            flights: allocationText.includes("30% flight") ? 30 : 35,
+            activities: 25,
+          };
+        }
+      }
+    }
+
+    // Extract dates
+    if (!hasDates) {
+      const dateMatch = lastUserMessage.match(
+        /(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})|(\w+\s+\d{1,2})/g
+      );
+      if (dateMatch) {
+        newPreferences.dates = dateMatch.join(" to ");
+      }
+    }
+
+    // Extract date flexibility
+    if (hasDates && !hasFlexibility) {
+      const flexibleKeywords = ["flexible", "can move", "somewhat", "yes"];
+      const strictKeywords = ["strict", "fixed", "exact", "no"];
+
+      if (flexibleKeywords.some((kw) =>
+        lastUserMessage.toLowerCase().includes(kw)
+      )) {
+        newPreferences.date_flexibility = "flexible";
+      } else if (strictKeywords.some((kw) =>
+        lastUserMessage.toLowerCase().includes(kw)
+      )) {
+        newPreferences.date_flexibility = "strict";
+      }
+    }
+
+    // Update conversation with new preferences
+    if (Object.keys(updates).length > 0 || Object.keys(newPreferences).length > 0) {
       await supabase
         .from("conversations")
-        .update(updates)
+        .update({
+          ...updates,
+          preferences: newPreferences,
+          updated_at: new Date().toISOString(),
+        })
         .eq("id", conversationId);
     }
 
@@ -137,13 +320,11 @@ If the user has selected a location on the map, they will mention it in their me
     });
   } catch (error) {
     console.error("Error in travel-chat function:", error);
-    const errorMessage = error instanceof Error ? error.message : "Internal server error";
-    return new Response(
-      JSON.stringify({ error: errorMessage }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
-    );
+    const errorMessage =
+      error instanceof Error ? error.message : "Internal server error";
+    return new Response(JSON.stringify({ error: errorMessage }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });
