@@ -16,7 +16,7 @@ PRICE_MAX = 1000
 
 # API VARIABLES
 API_HOST = "booking-com15.p.rapidapi.com"
-API_KEY = "a4635f20famshde916da8e358adbp1ad22ejsn6e8d49abb4b1"
+API_KEY = ""
 
 
 class BookingComAPI:
