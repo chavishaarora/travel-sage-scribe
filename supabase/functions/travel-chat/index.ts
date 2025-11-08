@@ -54,6 +54,117 @@ function parseRecommendationsWithLinks(
   return enhancedResponse;
 }
 
+/**
+ * Search for hotels using the Booking.com API
+ */
+async function searchHotels(
+  city: string,
+  arrival: string,
+  departure: string,
+  priceMax: number,
+): Promise<HotelResult | null> {
+  console.log(`Starting hotel search for ${city}...`);
+  try {
+    // 1. Get API credentials from environment
+    const API_HOST = Deno.env.get("BOOKING_API_HOST")!;
+    const API_KEY = Deno.env.get("BOOKING_API_KEY")!;
+
+    if (!API_HOST || !API_KEY) {
+      console.error("Booking API Host or Key is not set in environment.");
+      return null;
+    }
+
+    // 2. Initialize the API client with the user's data
+    const apiClient = new BookingComAPI(API_HOST, API_KEY, {
+      CITY_QUERY: city,
+      ARRIVAL_DATE: arrival,
+      DEPARTURE_DATE: departure,
+      PRICE_MAX: priceMax,
+    });
+
+    // 3. Initialize the final result object
+    const resultData: HotelResult = {
+      destination: city, // Default, will be updated
+      hotel_name: "N/A",
+      hotel_description: "N/A",
+      price: 0,
+      currency: "N/A",
+      booking_hotel_id: 0,
+      hotel_photo_url: [],
+      room_photo_url: "N/A",
+    };
+
+    // 4. Search Destination (Step 1)
+    if (!await apiClient.searchDestination()) {
+      console.log("Final result not available: destination search failed.");
+      return null;
+    }
+    resultData.destination = apiClient.getDestinationName();
+
+    // 5. Get Filters (Step 2 - optional, for count)
+    await apiClient.getFilters();
+
+    // 6. Search Hotels (Step 3)
+    const hotelSearchResult = await apiClient.searchHotels();
+    if (
+      !hotelSearchResult || !hotelSearchResult.data ||
+      !hotelSearchResult.data.hotels ||
+      hotelSearchResult.data.hotels.length === 0
+    ) {
+      console.log("Final result not available: hotel search failed or no results.");
+      return null;
+    }
+
+    const firstHotel = hotelSearchResult.data.hotels[0];
+    const hotelId = firstHotel.hotel_id;
+
+    // 7. Extract data from hotel search
+    resultData.booking_hotel_id = hotelId;
+    resultData.hotel_name = firstHotel.property?.name ?? "N/A";
+    resultData.hotel_description = firstHotel.accessibilityLabel ?? "N/A";
+    
+    // Safely extract price
+    const priceBreakdown = firstHotel.property?.priceBreakdown?.grossPrice;
+    if (priceBreakdown) {
+      resultData.price = priceBreakdown.value ?? 0;
+      resultData.currency = priceBreakdown.currency ?? "N/A";
+    }
+    
+    resultData.hotel_photo_url = firstHotel.property?.photoUrls ?? [];
+    console.log("--- First Hotel Found & Data Collected ---");
+
+    // 8. Get Hotel Details (Step 4 - for room photo)
+    const detailsResult = await apiClient.getHotelDetails(hotelId);
+    if (detailsResult && detailsResult.data) {
+      const rooms = detailsResult.data.rooms;
+      if (rooms) {
+        try {
+          const firstRoomId = Object.keys(rooms)[0];
+          const firstRoomData = rooms[firstRoomId];
+          const photosList = firstRoomData?.photos ?? [];
+          
+          for (const photo of photosList) {
+            if (photo.url_max1280) {
+              resultData.room_photo_url = photo.url_max1280;
+              console.log("✅ Extracted first room photo URL.");
+              break;
+            }
+          }
+        } catch (e) {
+          console.log("⚠️ No rooms found in details data.");
+        }
+      }
+    }
+
+    console.log("\n🎉 Final Hotel Dictionary Complete.");
+    return resultData;
+
+  } catch (error) {
+    console.error("Error in searchHotels function:", error);
+    return null;
+  }
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -196,101 +307,132 @@ Current Trip Details:
 - Dates: ${hasDates}
 - Flexibility: ${hasFlexibility}`;
 
-<<<<<<< HEAD
-      let hotelRecommendation = "";
+      // Parse dates from the user's input
+      let arrivalDate = "";
+      let departureDate = "";
       
-      // Let's assume you have parsed dates and budget
-      const exampleArrival = "2025-11-20"; // You need to get this from `hasDates`
-      const exampleDeparture = "2025-11-25"; // You need to get this from `hasDates`
+      // Try to extract dates from the dates string
+      if (hasDates) {
+        const dateMatch = hasDates.match(/(\d{4}-\d{2}-\d{2})|(\d{1,2}\/\d{1,2}\/\d{4})/g);
+        if (dateMatch && dateMatch.length >= 2) {
+          arrivalDate = dateMatch[0];
+          departureDate = dateMatch[1];
+        } else if (dateMatch && dateMatch.length === 1) {
+          // If only one date, assume it's arrival and add 7 days
+          arrivalDate = dateMatch[0];
+          const arrival = new Date(arrivalDate);
+          arrival.setDate(arrival.getDate() + 7);
+          departureDate = arrival.toISOString().split('T')[0];
+        } else {
+          // Fallback: use current date + 30 days for arrival, +37 for departure
+          const now = new Date();
+          now.setDate(now.getDate() + 30);
+          arrivalDate = now.toISOString().split('T')[0];
+          now.setDate(now.getDate() + 7);
+          departureDate = now.toISOString().split('T')[0];
+        }
+      } else {
+        // Default dates if none provided
+        const now = new Date();
+        now.setDate(now.getDate() + 30);
+        arrivalDate = now.toISOString().split('T')[0];
+        now.setDate(now.getDate() + 7);
+        departureDate = now.toISOString().split('T')[0];
+      }
+
+      // Get accommodation budget
       const budgetMax = conversationData.budget_allocation?.accommodation ?? 1000;
 
-      // Call your new function!
+      // Search for hotels using the Booking.com API
+      let hotelRecommendation = "";
+      console.log(`Searching hotels for ${hasDestination} from ${arrivalDate} to ${departureDate}, max price: ${budgetMax}`);
+      
       const hotelData = await searchHotels(
         hasDestination, 
-        exampleArrival, 
-        exampleDeparture, 
+        arrivalDate, 
+        departureDate, 
         budgetMax
       );
 
       if (hotelData) {
         console.log("Successfully found a hotel:", hotelData.hotel_name);
-        // Add the hotel info to the AI's prompt!
+        
+        // Create a direct booking link
+        const bookingUrl = `https://www.booking.com/hotel/${hotelData.booking_hotel_id}.html?checkin=${arrivalDate}&checkout=${departureDate}`;
+        
+        // Add the hotel info to the AI's prompt
         hotelRecommendation = `
-RECOMMENDED HOTEL:
-Based on your budget and destination, I found a great option:
-- Name: ${hotelData.hotel_name}
-- Price: Around ${hotelData.currency} ${hotelData.price}
-- Description: ${hotelData.hotel_description}
-Please include this hotel as a top suggestion in the itinerary mentioning that it's found on BAZOOKA, a local search tool.
+
+🏨 **HOTEL RECOMMENDATION** (via Booking.com):
+I found a great hotel option within your budget:
+
+**${hotelData.hotel_name}**
+- Price: ${hotelData.currency} ${hotelData.price.toFixed(2)} for the entire stay
+- ${hotelData.hotel_description}
+- 🔗 [Book on Booking.com](${bookingUrl})
+${hotelData.hotel_photo_url.length > 0 ? `- 📸 [View Photos](${hotelData.hotel_photo_url[0]})` : ''}
+
+IMPORTANT: Include this hotel recommendation at the START of your itinerary, right after greeting the user. Make it prominent and include the booking link.
+`;
+      } else {
+        console.log("Hotel search failed, will provide generic accommodation advice");
+        hotelRecommendation = `
+
+🏨 **ACCOMMODATION NOTE:**
+I wasn't able to fetch specific hotel recommendations at the moment, but I recommend checking Booking.com or similar sites for hotels in ${hasDestination} for your dates (${arrivalDate} to ${departureDate}) within your budget of ${budgetMax}.
 `;
       }
       
-      systemPrompt += hotelRecommendation; // Add hotel data to the prompt
-      
-// --- END: EXAMPLE ---
+      systemPrompt += hotelRecommendation;
 
-systemPrompt += `INSTRUCTIONS FOR GENERATING RECOMMENDATIONS:
-1. Create a day-by-day itinerary based on their preferences
-2. VERY IMPORTANT - For EACH activity, restaurant, or attraction mentioned:
-   - Use SPECIFIC place names (not generic descriptions)
-   - Include descriptive verbs from this list:
-     Visit, Dine at, Explore, Try, Experience, Enjoy, Go to, See, Check out,
-     Discover, Browse, Sample, Hike, Trek, Climb, Tour, Take, Do, Participate in,
-     Attend, Join, Relax at, Swim at, Kayak in, Bike through, Walk to, Drive to,
-     Sail on, Surf at, Ski on, Watch, Taste, Drink, Eat at, Have, Book, Reserve,
-     Take a tour, Go on, View, Catch, Ride, Admire, Appreciate, Stroll through,
-     Wander in
-   - Examples of GOOD format:
-     * "Visit Louvre Museum - €15/person ⭐ 4.6/5"
-     * "Dine at L'Astrance Restaurant - €120/person ⭐ 4.5/5"
-     * "Trek the GR20 Trail - Full day experience ⭐ 4.8/5"
-     * "Swim at Palombaggia Beach - Free ⭐ 4.7/5"
-     * "Kayak in Scandola Nature Reserve - €50/person ⭐ 4.9/5"
-=======
+      systemPrompt += `
+
 CRITICAL INSTRUCTIONS FOR ACTIVITY RECOMMENDATIONS:
 
-1. **ONLY ACTIVITIES** - Do NOT recommend hotels or flights (they will be added later via booking API)
+1. **START WITH THE HOTEL** - Begin your response with the hotel recommendation provided above (if available)
 
-2. **FORMAT FOR EACH ACTIVITY:**
+2. **ONLY ACTIVITIES** - After the hotel, focus ONLY on activities, restaurants, and attractions
+   - Do NOT recommend additional hotels
+   - Do NOT recommend flights (they will be added later)
+
+3. **FORMAT FOR EACH ACTIVITY:**
    - ONE sentence description maximum
    - Include the action verb (Visit, Explore, Dine at, etc.)
-   - Add a real, working link to the official website or a reliable source (TripAdvisor, Google, official tourism site)
+   - Add Google Maps links for each location
    - Keep it minimal - users can click to learn more
 
-3. **EXAMPLE FORMAT:**
+4. **EXAMPLE FORMAT:**
    Day 1:
    - Visit Louvre Museum - Home to the Mona Lisa and 35,000 artworks
-     🔗 https://www.louvre.fr
->>>>>>> 8afd61e301fddf501eb1443138a194d060e7661d
+     🗺️ https://www.google.com/maps/search/Louvre+Museum+Paris
    
    - Dine at Le Comptoir du Relais - Classic French bistro in Saint-Germain
-     🔗 https://www.tripadvisor.com/Restaurant_Review-g187147-d719386
+     🗺️ https://www.google.com/maps/search/Le+Comptoir+du+Relais+Paris
 
    - Explore Eiffel Tower - Iconic landmark with stunning city views
-     🔗 https://www.toureiffel.paris
+     🗺️ https://www.google.com/maps/search/Eiffel+Tower+Paris
 
-4. **REQUIREMENTS:**
+5. **REQUIREMENTS:**
    - Create day-by-day itinerary (2-4 activities per day)
    - Match their activity preference (${hasActivities})
    - Include breakfast/lunch/dinner spots
    - Add cultural sites, attractions, and experiences
-   - Each activity = 1 sentence + 1 link
-   - Use real, clickable URLs (no placeholders)
-   - Prioritize official websites, then TripAdvisor, Google Maps, or tourism sites
+   - Each activity = 1 sentence + Google Maps link
+   - Use real, clickable Google Maps URLs
 
-5. **STAY CONCISE:**
+6. **STAY CONCISE:**
    - No long descriptions
    - No bullet point explanations
-   - Just: Activity name + one sentence + link
+   - Just: Activity name + one sentence + Google Maps link
    - Let the links do the talking
 
-6. **DO NOT INCLUDE:**
-   - Hotel recommendations
+7. **DO NOT INCLUDE:**
+   - Additional hotel recommendations (already provided)
    - Flight details
    - Transportation between cities
    - Lengthy background information
 
-Remember: Short, actionable, with real links. Hotels and flights come later!`;
+Remember: Hotel first, then short activities with Google Maps links!`;
     }
 
     systemPrompt += `
@@ -317,7 +459,8 @@ Extract these fields when mentioned by the user:
   "budget": "number | null",
   "budget_allocation": {"accommodation": number, "flights": number, "activities": number} | null,
   "dates": "string | null",
-  "date_flexibility": "flexible | strict | null"
+  "date_flexibility": "flexible | strict | null",
+  "confirmed": "boolean | null"
 }
 
 Examples:
@@ -333,9 +476,9 @@ User: "Let's go to Paris in June"
 Your response: "[exciting message about Paris]
 |||EXTRACT|||{"destination": "Paris", "dates": "June"}|||END|||"
 
-User: "I'm from London and have $3000 and want to relax at beaches"
-Your response: "[helpful message about beach destinations]
-|||EXTRACT|||{"origin": "London", "budget": 3000, "activities": "passive", "weather_preference": "tropical"}|||END|||"
+User: "Yes, that's correct"
+Your response: "[confirmation message]
+|||EXTRACT|||{"confirmed": true}|||END|||"
 
 ALWAYS include the extraction block, even if empty: |||EXTRACT|||{}|||END|||`;
 
@@ -437,6 +580,9 @@ ALWAYS include the extraction block, even if empty: |||EXTRACT|||{}|||END|||`;
     if (extractedData.date_flexibility) {
       newPreferences.date_flexibility = extractedData.date_flexibility;
     }
+    if (extractedData.confirmed !== undefined) {
+      newPreferences.confirmed = extractedData.confirmed;
+    }
 
     // Update conversation with new preferences
     if (Object.keys(updates).length > 0 || Object.keys(newPreferences).length > Object.keys(conversationData).length) {
@@ -463,118 +609,3 @@ ALWAYS include the extraction block, even if empty: |||EXTRACT|||{}|||END|||`;
     });
   }
 });
-
-// --- Add this function to your index.ts file ---
-// --- You can put it right above your `serve(...)` call ---
-
-/**
- * This function performs the full hotel search flow,
- * just like the main() function in your Python script.
- */
-async function searchHotels(
-  city: string,
-  arrival: string,
-  departure: string,
-  priceMax: number,
-): Promise<HotelResult | null> {
-  console.log(`Starting hotel search for ${city}...`);
-  try {
-    // 1. Get API credentials from environment
-    const API_HOST = Deno.env.get("BOOKING_API_HOST")!;
-    const API_KEY = Deno.env.get("BOOKING_API_KEY")!;
-
-    if (!API_HOST || !API_KEY) {
-      console.error("Booking API Host or Key is not set in environment.");
-      return null;
-    }
-
-    // 2. Initialize the API client with the user's data
-    const apiClient = new BookingComAPI(API_HOST, API_KEY, {
-      CITY_QUERY: city,
-      ARRIVAL_DATE: arrival,
-      DEPARTURE_DATE: departure,
-      PRICE_MAX: priceMax,
-    });
-
-    // 3. Initialize the final result object
-    const resultData: HotelResult = {
-      destination: city, // Default, will be updated
-      hotel_name: "N/A",
-      hotel_description: "N/A",
-      price: 0,
-      currency: "N/A",
-      booking_hotel_id: 0,
-      hotel_photo_url: [],
-      room_photo_url: "N/A",
-    };
-
-    // 4. Search Destination (Step 1 in Python)
-    if (!await apiClient.searchDestination()) {
-      console.log("Final result not available: destination search failed.");
-      return null;
-    }
-    resultData.destination = apiClient.getDestinationName(); // Use the new getter
-
-    // 5. Get Filters (Step 2 in Python - optional, for count)
-    await apiClient.getFilters();
-
-    // 6. Search Hotels (Step 3 in Python)
-    const hotelSearchResult = await apiClient.searchHotels();
-    if (
-      !hotelSearchResult || !hotelSearchResult.data ||
-      !hotelSearchResult.data.hotels ||
-      hotelSearchResult.data.hotels.length === 0
-    ) {
-      console.log("Final result not available: hotel search failed or no results.");
-      return null;
-    }
-
-    const firstHotel = hotelSearchResult.data.hotels[0];
-    const hotelId = firstHotel.hotel_id;
-
-    // 7. Extract data from hotel search
-    resultData.booking_hotel_id = hotelId;
-    resultData.hotel_name = firstHotel.property?.name ?? "N/A";
-    resultData.hotel_description = firstHotel.accessibilityLabel ?? "N/A";
-    
-    // Safely extract price
-    const priceBreakdown = firstHotel.property?.priceBreakdown?.grossPrice;
-    if (priceBreakdown) {
-      resultData.price = priceBreakdown.value ?? 0;
-      resultData.currency = priceBreakdown.currency ?? "N/A";
-    }
-    
-    resultData.hotel_photo_url = firstHotel.property?.photoUrls ?? [];
-    console.log("--- First Hotel Found & Data Collected ---");
-
-    // 8. Get Hotel Details (Step 4 in Python - for room photo)
-    const detailsResult = await apiClient.getHotelDetails(hotelId);
-    if (detailsResult && detailsResult.data) {
-      const rooms = detailsResult.data.rooms;
-      if (rooms) {
-        try {
-          const firstRoomId = Object.keys(rooms)[0];
-          const firstRoomData = rooms[firstRoomId];
-          const photosList = firstRoomData?.photos ?? [];
-          
-          for (const photo of photosList) {
-            if (photo.url_max1280) {
-              resultData.room_photo_url = photo.url_max1280;
-              console.log("✅ Extracted first room photo URL.");
-              break; // Stop after finding the first one
-            }
-          }
-        } catch (e) {
-          console.log("⚠️ No rooms found in details data.");
-        }
-      }
-    }
-
-    console.log("\n🎉 Final Hotel Dictionary Complete.");
-    return resultData;
-
-  } catch (error) {
-    console.error("Error in searchHotels function:", error);
-    return null;
-  }
-}
