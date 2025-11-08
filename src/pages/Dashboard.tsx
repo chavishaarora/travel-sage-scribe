@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { User } from "@supabase/supabase-js";
@@ -17,6 +17,7 @@ const Dashboard = () => {
     lng: number;
     name: string;
   } | null>(null);
+  const chatInterfaceRef = useRef<any>(null);
 
   useEffect(() => {
     // Check authentication
@@ -45,6 +46,16 @@ const Dashboard = () => {
   const handleLogout = async () => {
     await supabase.auth.signOut();
     navigate("/auth");
+  };
+
+  const handleLocationDetected = (location: { lat: number; lng: number; name: string }) => {
+    // Automatically send detected location to chat
+    const message = `I've chosen ${location.name}`;
+    
+    // Trigger chat message - you can dispatch an event or use a ref
+    if (chatInterfaceRef.current?.sendLocationMessage) {
+      chatInterfaceRef.current.sendLocationMessage(message, location);
+    }
   };
 
   if (loading) {
@@ -92,6 +103,7 @@ const Dashboard = () => {
         {/* Left: Chat Interface */}
         <div className="w-1/2 border-r flex flex-col">
           <ChatInterface
+            ref={chatInterfaceRef}
             user={user}
             onLocationSelect={setSelectedLocation}
           />
@@ -103,6 +115,7 @@ const Dashboard = () => {
             <MapView
               selectedLocation={selectedLocation}
               onLocationSelect={setSelectedLocation}
+              onLocationDetected={handleLocationDetected}
             />
           </div>
           <div className="h-1/2 overflow-auto">
