@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Send, MapPin } from "lucide-react";
+import { Send, MapPin, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 
 interface Message {
@@ -72,6 +72,47 @@ const ChatInterface = forwardRef<any, ChatInterfaceProps>(({ user, onLocationSel
       toast.error("Failed to create new conversation");
       console.error(error);
     }
+  };
+
+  // Function to render message content with Google Maps links
+  const renderMessageContent = (content: string) => {
+    // Split content by Google Maps URLs
+    const parts = content.split(/(https:\/\/www\.google\.com\/maps\/search\/[^\s]+)/g);
+    
+    return parts.map((part, index) => {
+      if (part.startsWith("https://www.google.com/maps/search/")) {
+        // Decode the URL to get readable text
+        const encodedQuery = part.split("/search/")[1];
+        const decodedQuery = decodeURIComponent(encodedQuery).replace(/\+/g, " ");
+        
+        return (
+          <div key={index} className="my-2 flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              asChild
+              className="gap-2 text-primary hover:text-primary/80"
+            >
+              <a href={part} target="_blank" rel="noopener noreferrer">
+                <MapPin className="h-4 w-4" />
+                <span className="text-xs">{decodedQuery}</span>
+                <ExternalLink className="h-3 w-3" />
+              </a>
+            </Button>
+          </div>
+        );
+      }
+      
+      // Regular text - preserve line breaks and formatting
+      if (part.trim()) {
+        return (
+          <div key={index} className="whitespace-pre-wrap">
+            {part}
+          </div>
+        );
+      }
+      return null;
+    });
   };
 
   const sendMessage = async (messageText?: string, location?: { lat: number; lng: number; name: string }) => {
@@ -176,7 +217,13 @@ const ChatInterface = forwardRef<any, ChatInterfaceProps>(({ user, onLocationSel
                     : "bg-muted text-foreground"
                 }`}
               >
-                <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                <div className="text-sm">
+                  {message.role === "assistant" ? (
+                    renderMessageContent(message.content)
+                  ) : (
+                    <p className="whitespace-pre-wrap">{message.content}</p>
+                  )}
+                </div>
               </div>
             </div>
           ))}

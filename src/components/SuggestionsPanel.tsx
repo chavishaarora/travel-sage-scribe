@@ -3,22 +3,36 @@ import { supabase } from "@/integrations/supabase/client";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Plane, Hotel, MapPin, Star, ExternalLink } from "lucide-react";
+import { Plane, Hotel, MapPin, Star, ExternalLink, Utensils } from "lucide-react";
 
 interface Suggestion {
   id: string;
-  type: "flight" | "hotel" | "attraction";
+  type: "flight" | "hotel" | "attraction" | "restaurant";
   title: string;
   description: string;
   price: number;
   rating: number;
   image_url: string;
   booking_url: string;
+  location: { lat?: number; lng?: number; address?: string } | null;
+}
+
+interface GroupedSuggestions {
+  flights: Suggestion[];
+  hotels: Suggestion[];
+  attractions: Suggestion[];
+  restaurants: Suggestion[];
 }
 
 const SuggestionsPanel = () => {
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [suggestions, setSuggestions] = useState<GroupedSuggestions>({
+    flights: [],
+    hotels: [],
+    attractions: [],
+    restaurants: [],
+  });
   const [loading, setLoading] = useState(true);
+  const [destination, setDestination] = useState<string>("");
 
   useEffect(() => {
     loadSuggestions();
@@ -32,7 +46,7 @@ const SuggestionsPanel = () => {
       // Get active conversation
       const { data: conversations } = await supabase
         .from("conversations")
-        .select("id")
+        .select("*")
         .eq("user_id", user.id)
         .eq("status", "active")
         .order("created_at", { ascending: false })
@@ -40,15 +54,39 @@ const SuggestionsPanel = () => {
 
       if (!conversations || conversations.length === 0) return;
 
+      const conversation = conversations[0];
+      setDestination(conversation.destination || "");
+
       // Load suggestions
       const { data, error } = await supabase
         .from("travel_suggestions")
         .select("*")
-        .eq("conversation_id", conversations[0].id)
+        .eq("conversation_id", conversation.id)
         .order("created_at", { ascending: false });
 
       if (error) throw error;
-      setSuggestions(data as Suggestion[]);
+
+      // Group suggestions by type
+      const grouped: GroupedSuggestions = {
+        flights: [],
+        hotels: [],
+        attractions: [],
+        restaurants: [],
+      };
+
+      data?.forEach((suggestion: any) => {
+        if (suggestion.type === "flight") {
+          grouped.flights.push(suggestion);
+        } else if (suggestion.type === "hotel") {
+          grouped.hotels.push(suggestion);
+        } else if (suggestion.type === "restaurant") {
+          grouped.restaurants.push(suggestion);
+        } else {
+          grouped.attractions.push(suggestion);
+        }
+      });
+
+      setSuggestions(grouped);
     } catch (error) {
       console.error("Failed to load suggestions:", error);
     } finally {
@@ -62,6 +100,8 @@ const SuggestionsPanel = () => {
         return <Plane className="h-5 w-5" />;
       case "hotel":
         return <Hotel className="h-5 w-5" />;
+      case "restaurant":
+        return <Utensils className="h-5 w-5" />;
       case "attraction":
         return <MapPin className="h-5 w-5" />;
       default:
@@ -69,75 +109,166 @@ const SuggestionsPanel = () => {
     }
   };
 
+  // Create Google Maps search link
+  const createGoogleMapsLink = (title: string) => {
+    const query = `${title} ${destination}`;
+    return `https://www.google.com/maps/search/${encodeURIComponent(query)}`;
+  };
+
+  const renderSuggestionGroup = (title: string, items: Suggestion[]) => {
+    if (items.length === 0) return null;
+
+    return (
+      <div className="mb-6" key={title}>
+        <h4 className="text-md font-semibold text-foreground mb-3 uppercase tracking-wider">
+          {title}
+        </h4>
+        <div className="space-y-3">
+          {items.map((item) => (
+            <Card key={item.id} className="p-3 shadow-sm hover:shadow-md transition-shadow">
+              <div className="flex gap-3">
+                {item.image_url && (
+                  <img
+                    src={item.image_url}
+                    alt={item.title}
+                    className="w-16 h-16 object-cover rounded-lg flex-shrink-0"
+                  />
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {getIcon(item.type)}
+                      <h5 className="font-semibold text-sm text-foreground truncate">
+                        {item.title}
+                      </h5>
+                    </div>
+                    <Badge variant="secondary" className="capitalize text-xs flex-shrink-0">
+                      {item.type}
+                    </Badge>
+                  </div>
+                  
+                  {item.description && (
+                    <p className="text-xs text-muted-foreground line-clamp-2 mt-1">
+                      {item.description}
+                    </p>
+                  )}
+
+                  <div className="flex items-center justify-between mt-2 flex-wrap gap-2">
+                    <div className="flex items-center gap-3">
+                      {item.price > 0 && (
+                        <span className="text-sm font-bold text-primary">
+                          ${item.price.toFixed(2)}
+                        </span>
+                      )}
+                      {item.rating > 0 && (
+                        <div className="flex items-center gap-1">
+                          <Star className="h-3.5 w-3.5 fill-secondary text-secondary" />
+                          <span className="text-xs text-foreground">
+                            {item.rating.toFixed(1)}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex gap-1">
+                      {/* Google Maps Link */}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        asChild
+                        className="h-7 gap-1 text-xs"
+                        title="View on Google Maps"
+                      >
+                        <a
+                          href={createGoogleMapsLink(item.title)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          <MapPin className="h-3 w-3" />
+                          <span className="hidden sm:inline">Maps</span>
+                        </a>
+                      </Button>
+
+                      {/* Booking/Details Link */}
+                      {item.booking_url && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          asChild
+                          className="h-7 gap-1 text-xs"
+                        >
+                          <a
+                            href={item.booking_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            <span className="hidden sm:inline">Details</span>
+                          </a>
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </Card>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
   if (loading) {
     return (
-      <div className="h-full flex items-center justify-center">
+      <div className="h-full flex items-center justify-center p-8">
         <p className="text-muted-foreground">Loading suggestions...</p>
       </div>
     );
   }
 
-  if (suggestions.length === 0) {
+  const hasAnySuggestions =
+    suggestions.flights.length > 0 ||
+    suggestions.hotels.length > 0 ||
+    suggestions.attractions.length > 0 ||
+    suggestions.restaurants.length > 0;
+
+  if (!hasAnySuggestions) {
     return (
       <div className="h-full flex flex-col items-center justify-center p-8 text-center">
         <MapPin className="h-12 w-12 text-muted-foreground mb-4" />
-        <h3 className="text-lg font-semibold text-foreground mb-2">No Suggestions Yet</h3>
+        <h3 className="text-lg font-semibold text-foreground mb-2">
+          No Suggestions Yet
+        </h3>
         <p className="text-sm text-muted-foreground max-w-sm">
-          Chat with the AI agent to get personalized travel recommendations for flights, hotels, and attractions.
+          Chat with the AI agent to complete your trip details. Once your itinerary is ready,
+          personalized recommendations for flights, hotels, attractions, and restaurants will appear here.
         </p>
       </div>
     );
   }
 
   return (
-    <div className="h-full overflow-auto p-4 space-y-4">
-      <h3 className="text-lg font-semibold text-foreground mb-4">Travel Suggestions</h3>
-      {suggestions.map((suggestion) => (
-        <Card key={suggestion.id} className="p-4 shadow-card hover:shadow-glow transition-shadow">
-          <div className="flex gap-4">
-            {suggestion.image_url && (
-              <img
-                src={suggestion.image_url}
-                alt={suggestion.title}
-                className="w-24 h-24 object-cover rounded-lg"
-              />
-            )}
-            <div className="flex-1 space-y-2">
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-2">
-                  {getIcon(suggestion.type)}
-                  <h4 className="font-semibold text-foreground">{suggestion.title}</h4>
-                </div>
-                <Badge variant="secondary" className="capitalize">
-                  {suggestion.type}
-                </Badge>
-              </div>
-              <p className="text-sm text-muted-foreground line-clamp-2">{suggestion.description}</p>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-4">
-                  {suggestion.price > 0 && (
-                    <span className="text-lg font-bold text-primary">${suggestion.price}</span>
-                  )}
-                  {suggestion.rating > 0 && (
-                    <div className="flex items-center gap-1">
-                      <Star className="h-4 w-4 fill-secondary text-secondary" />
-                      <span className="text-sm text-foreground">{suggestion.rating.toFixed(1)}</span>
-                    </div>
-                  )}
-                </div>
-                {suggestion.booking_url && (
-                  <Button size="sm" variant="outline" asChild>
-                    <a href={suggestion.booking_url} target="_blank" rel="noopener noreferrer">
-                      View Details
-                      <ExternalLink className="h-3 w-3 ml-2" />
-                    </a>
-                  </Button>
-                )}
-              </div>
-            </div>
-          </div>
-        </Card>
-      ))}
+    <div className="h-full overflow-auto p-4">
+      <h3 className="text-lg font-bold text-foreground mb-6">
+        Travel Suggestions
+        {destination && (
+          <span className="text-sm font-normal text-muted-foreground ml-2">
+            for {destination}
+          </span>
+        )}
+      </h3>
+
+      {renderSuggestionGroup("✈️ Flights", suggestions.flights)}
+      {renderSuggestionGroup("🏨 Hotels", suggestions.hotels)}
+      {renderSuggestionGroup("🎭 Attractions & Activities", suggestions.attractions)}
+      {renderSuggestionGroup("🍽️ Restaurants", suggestions.restaurants)}
+
+      <div className="mt-8 p-4 bg-muted rounded-lg">
+        <p className="text-xs text-muted-foreground">
+          💡 Tip: Click the "Maps" button on any recommendation to view it on Google Maps and see
+          nearby options, reviews, opening hours, and directions.
+        </p>
+      </div>
     </div>
   );
 };

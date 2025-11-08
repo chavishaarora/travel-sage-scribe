@@ -8,6 +8,54 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type",
 };
 
+// Helper function to create Google Maps search URL
+function createGoogleMapsUrl(placeName: string, destination: string): string {
+  const query = `${placeName} ${destination}`;
+  const encodedQuery = encodeURIComponent(query);
+  return `https://www.google.com/maps/search/${encodedQuery}`;
+}
+
+// Enhanced pattern to capture MORE activity mentions
+function parseRecommendationsWithLinks(
+  response: string,
+  destination: string
+): string {
+  // EXPANDED pattern with more trigger keywords
+  const placePattern =
+    /(?:Visit|Dine at|Explore|Try|Experience|Enjoy|Go to|See|Check out|Discover|Browse|Sample|Hike|Trek|Climb|Tour|Take|Do|Participate in|Attend|Join|Relax at|Swim at|Kayak in|Bike through|Walk to|Drive to|Sail on|Surf at|Ski on|Climb|Watch|Taste|Drink|Eat at|Have|Book|Reserve|Book a tour|Take a tour|Go on|View|Visit the|Go for|Catch|Watch the|Ride|Take a|Have a|Enjoy the|Admire|Appreciate|See the|Walk around|Stroll through|Wander in)\s+([^-\n.;,]*?)(?:\s*[-:.;,]|$|\n)/gi;
+
+  let enhancedResponse = response;
+  const matches = response.matchAll(placePattern);
+  const processedPlaces = new Set<string>(); // Avoid duplicates
+
+  for (const match of matches) {
+    let placeName = match[1]?.trim();
+    
+    if (placeName && placeName.length > 2 && !processedPlaces.has(placeName.toLowerCase())) {
+      // Clean up the place name
+      placeName = placeName
+        .replace(/\s+/g, " ") // Remove extra spaces
+        .split(" - ")[0] // Remove descriptions after dash
+        .split(" (")[0] // Remove parentheses
+        .trim();
+
+      if (placeName.length > 2) {
+        processedPlaces.add(placeName.toLowerCase());
+        const mapsUrl = createGoogleMapsUrl(placeName, destination);
+        const original = match[0];
+        
+        // Only add link if not already present
+        if (!enhancedResponse.includes(mapsUrl)) {
+          const enhanced = `${original}\n🗺️ [${placeName}](${mapsUrl})`;
+          enhancedResponse = enhancedResponse.replace(original, enhanced);
+        }
+      }
+    }
+  }
+
+  return enhancedResponse;
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -39,7 +87,7 @@ serve(async (req) => {
     const hasWeatherPreference = conversationData.weather_preference;
     const hasActivities = conversationData.activities;
     const hasBudget = conversation?.budget || conversationData.budget;
-    const hasBudgetAllocation = conversationData.budget_allocation; // { hotel, flights, activities }
+    const hasBudgetAllocation = conversationData.budget_allocation;
     const hasDates = conversation?.start_date || conversationData.dates;
     const hasFlexibility = conversationData.date_flexibility;
 
@@ -107,25 +155,56 @@ STAGE 7: CHECK DATE FLEXIBILITY
 - This helps with finding better flight and hotel deals`;
     } else {
       systemPrompt += `
-STAGE 8: ALL INFO COLLECTED
+STAGE 8: ALL INFO COLLECTED - GENERATE DETAILED ITINERARY
 Current Trip Details:
 - Destination: ${hasDestination}
 - Activities Preference: ${hasActivities}
 - Total Budget: ${hasBudget}
-- Budget Allocation: ${JSON.stringify(hasBudgetAllocation)}
 - Dates: ${hasDates}
 - Flexibility: ${hasFlexibility}
 
-Now provide day-by-day activity recommendations considering:
-- Google reviews for highly-rated activities
-- Mix of the activities they're interested in
-- Budget constraints
-- Local climate and weather
+INSTRUCTIONS FOR GENERATING RECOMMENDATIONS:
+1. Create a day-by-day itinerary based on their preferences
+2. VERY IMPORTANT - For EACH activity, restaurant, or attraction mentioned:
+   - Use SPECIFIC place names (not generic descriptions)
+   - Include descriptive verbs from this list:
+     Visit, Dine at, Explore, Try, Experience, Enjoy, Go to, See, Check out,
+     Discover, Browse, Sample, Hike, Trek, Climb, Tour, Take, Do, Participate in,
+     Attend, Join, Relax at, Swim at, Kayak in, Bike through, Walk to, Drive to,
+     Sail on, Surf at, Ski on, Watch, Taste, Drink, Eat at, Have, Book, Reserve,
+     Take a tour, Go on, View, Catch, Ride, Admire, Appreciate, Stroll through,
+     Wander in
+   - Examples of GOOD format:
+     * "Visit Louvre Museum - €15/person ⭐ 4.6/5"
+     * "Dine at L'Astrance Restaurant - €120/person ⭐ 4.5/5"
+     * "Trek the GR20 Trail - Full day experience ⭐ 4.8/5"
+     * "Swim at Palombaggia Beach - Free ⭐ 4.7/5"
+     * "Kayak in Scandola Nature Reserve - €50/person ⭐ 4.9/5"
+   
+   - The system will AUTOMATICALLY add Google Maps links for EACH place
+   
+3. Include a good mix of:
+   - Breakfast/lunch/dinner recommendations
+   - Activities matching their preferences
+   - Local experiences and cultural sites
+   - Both budget-friendly and premium options
 
-PLACEHOLDER: Flight and hotel recommendations will be added via Booking API
-For now, acknowledge that you're preparing to search for flights and hotels but note that integration is pending.
+4. Respect their budget constraints and spread recommendations across trip days
 
-Ask if they want to proceed with booking or need any adjustments.`;
+5. CRITICAL: Always use specific place NAMES, not generic descriptions
+   ✓ CORRECT: "Visit Uffizi Gallery"
+   ✗ WRONG: "Visit museums"
+   ✓ CORRECT: "Hike to Tre Cime di Lavaredo"
+   ✗ WRONG: "Go hiking"
+
+FORMAT YOUR ITINERARY LIKE THIS:
+Day 1: [Destination/Region]
+- Morning: [Verb] [Specific Place Name] - [Cost] ⭐ [Rating]
+- Lunch: [Verb] [Specific Restaurant Name] - [Cost] ⭐ [Rating]
+- Afternoon: [Verb] [Specific Activity/Place] - [Cost] ⭐ [Rating]
+- Dinner: [Verb] [Specific Restaurant Name] - [Cost] ⭐ [Rating]
+
+The system will automatically convert these to Google Maps links!`;
     }
 
     systemPrompt += `
@@ -137,7 +216,7 @@ GENERAL RULES:
 - Extract all relevant information from their responses
 - If they mention location during conversation, note it as their destination
 - Never skip stages - gather info in order
-- Be concise - keep responses under 50 words`;
+- Be concise - keep responses under 150 words for stage transitions`;
 
     // Call OpenAI ChatGPT
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -153,7 +232,7 @@ GENERAL RULES:
           ...messages,
         ],
         temperature: 0.7,
-        max_tokens: 500,
+        max_tokens: 1200,
       }),
     });
 
@@ -187,7 +266,12 @@ GENERAL RULES:
     }
 
     const data = await response.json();
-    const aiResponse = data.choices[0].message.content;
+    let aiResponse = data.choices[0].message.content;
+
+    // Add Google Maps links to the response if we're at the itinerary stage
+    if (hasDestination && hasActivities && hasBudget && hasDates && hasFlexibility) {
+      aiResponse = parseRecommendationsWithLinks(aiResponse, hasDestination);
+    }
 
     // Extract and update conversation data based on user's last message
     const lastUserMessage = messages.filter((m: any) => m.role === "user").pop()?.content || "";
@@ -196,34 +280,26 @@ GENERAL RULES:
 
     // Extract destination if mentioned
     const destinationKeywords = [
-      "paris",
-      "tokyo",
-      "bali",
-      "new york",
-      "barcelona",
-      "london",
-      "dubai",
-      "thailand",
-      "thailand",
-      "italy",
-      "france",
-      "japan",
+      "paris", "tokyo", "bali", "new york", "barcelona", "london", "dubai",
+      "thailand", "italy", "france", "japan", "spain", "greece", "amsterdam",
+      "berlin", "rome", "venice", "istanbul", "morocco", "egypt", "corsica",
+      "provence", "swiss", "austria", "iceland", "norway", "korea", "mexico",
     ];
     if (!hasDestination) {
       const mentioned = destinationKeywords.find((dest) =>
         lastUserMessage.toLowerCase().includes(dest)
       );
       if (mentioned) {
-        updates.destination = mentioned;
+        updates.destination = mentioned.charAt(0).toUpperCase() + mentioned.slice(1);
       }
     }
 
     // Extract weather preference
     const weatherKeywords = {
-      tropical: ["tropical", "warm", "hot", "beach"],
-      temperate: ["mild", "spring", "fall", "moderate"],
-      cold: ["snow", "winter", "cold", "skiing"],
-      dry: ["dry", "desert", "sunny"],
+      tropical: ["tropical", "warm", "hot", "beach", "sunny", "caribbean"],
+      temperate: ["mild", "spring", "fall", "moderate", "pleasant", "cool"],
+      cold: ["snow", "winter", "cold", "skiing", "cozy", "alpine"],
+      dry: ["dry", "desert", "sunny", "arid", "mediterranean"],
     };
     if (!hasWeatherPreference) {
       for (const [weather, keywords] of Object.entries(weatherKeywords)) {
@@ -236,9 +312,9 @@ GENERAL RULES:
 
     // Extract activities
     const activityKeywords = {
-      passive: ["relax", "spa", "museum", "cultural", "beach", "wine"],
-      active: ["hiking", "sport", "adventure", "trek", "dive", "climb"],
-      mixed: ["mix", "both", "variety"],
+      passive: ["relax", "spa", "museum", "cultural", "beach", "wine", "tour", "gallery"],
+      active: ["hiking", "sport", "adventure", "trek", "dive", "climb", "water", "biking"],
+      mixed: ["mix", "both", "variety", "everything", "combination"],
     };
     if (!hasActivities) {
       for (const [activity, keywords] of Object.entries(activityKeywords)) {
@@ -258,32 +334,13 @@ GENERAL RULES:
       }
     }
 
-    // Extract budget allocation
-    if (hasBudget && !hasBudgetAllocation) {
-      const percentages = lastUserMessage.match(/(\d+)%/g);
-      if (percentages && percentages.length >= 2) {
-        // Try to parse allocation
-        const allocationText = lastUserMessage.toLowerCase();
-        if (
-          allocationText.includes("hotel") &&
-          allocationText.includes("flight")
-        ) {
-          newPreferences.budget_allocation = {
-            hotel: allocationText.includes("50% hotel") ? 50 : 40,
-            flights: allocationText.includes("30% flight") ? 30 : 35,
-            activities: 25,
-          };
-        }
-      }
-    }
-
     // Extract dates
     if (!hasDates) {
       const dateMatch = lastUserMessage.match(
-        /(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})|(\w+\s+\d{1,2})/g
+        /(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})|(\w+\s+\d{1,2})|(\d+\s+(?:days|nights|weeks))/gi
       );
       if (dateMatch) {
-        newPreferences.dates = dateMatch.join(" to ");
+        newPreferences.dates = dateMatch.join(" ");
       }
     }
 
