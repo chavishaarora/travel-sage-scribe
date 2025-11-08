@@ -89,6 +89,7 @@ serve(async (req) => {
     const hasBudgetAllocation = conversationData.budget_allocation;
     const hasDates = conversation?.start_date || conversationData.dates;
     const hasFlexibility = conversationData.date_flexibility;
+    const hasConfirmed = conversationData.confirmed;
 
     // Build system prompt based on conversation stage
     let systemPrompt = `You are an intelligent AI travel agent. Your goal is to help users plan their perfect trip by gathering information step by step.
@@ -101,14 +102,16 @@ CONVERSATION STAGE RULES:
 STAGE 1: NO ORIGIN YET
 - Start by asking where they'll be traveling FROM (their origin city/country)
 - Be friendly and explain this helps with flight planning and travel time considerations
-- Do NOT ask about destination or other details yet`;
+- Do NOT ask about destination or other details yet
+- KEEP YOUR RESPONSE TO MAX 3 SENTENCES`;
     } else if (!hasDestination) {
       systemPrompt += `
 STAGE 2: NO DESTINATION YET (Origin: ${hasOrigin})
 - Now ask about their preferred weather/climate (tropical, temperate, cold, dry, rainy, etc.)
 - Based on their weather preference, suggest 2-3 specific destinations
 - Ask which destination appeals to them
-- Do NOT ask about activities or budget yet`;
+- Do NOT ask about activities or budget yet
+- KEEP YOUR RESPONSE TO MAX 3 SENTENCES`;
     } else if (!hasWeatherPreference) {
       systemPrompt += `
 STAGE 3: DESTINATION SELECTED (Origin: ${hasOrigin}, Destination: ${hasDestination})
@@ -117,7 +120,8 @@ STAGE 3: DESTINATION SELECTED (Origin: ${hasOrigin}, Destination: ${hasDestinati
   * Passive/relaxing (beach, spa, cultural tours, museums)
   * Active (hiking, water sports, adventure activities)
   * Mix of both
-- Do NOT ask about budget or dates yet`;
+- Do NOT ask about budget or dates yet
+- KEEP YOUR RESPONSE TO MAX 3 SENTENCES`;
     } else if (!hasActivities) {
       systemPrompt += `
 STAGE 4: ACTIVITIES NOT YET SPECIFIED
@@ -126,7 +130,8 @@ STAGE 4: ACTIVITIES NOT YET SPECIFIED
   * Active (hiking, water sports, adventure activities)
   * Mix of both
 - Acknowledge their destination preference
-- Do NOT ask about budget or dates yet`;
+- Do NOT ask about budget or dates yet
+- KEEP YOUR RESPONSE TO MAX 3 SENTENCES`;
     } else if (!hasBudget) {
       systemPrompt += `
 STAGE 5: BUDGET NOT SET
@@ -136,7 +141,8 @@ STAGE 5: BUDGET NOT SET
   * What % should go to flights?
   * What % should go to activities?
   * Make sure it adds up to 100%
-- Be conversational and help them think through allocation`;
+- Be conversational and help them think through allocation
+- KEEP YOUR RESPONSE TO MAX 3 SENTENCES`;
     } else if (!hasBudgetAllocation) {
       systemPrompt += `
 STAGE 6: ALLOCATE BUDGET
@@ -146,21 +152,42 @@ STAGE 6: ALLOCATE BUDGET
   * Flights
   * Activities
 - Help them decide on reasonable splits
-- Confirm the total equals their budget`;
+- Confirm the total equals their budget
+- KEEP YOUR RESPONSE TO MAX 3 SENTENCES`;
     } else if (!hasDates) {
       systemPrompt += `
 STAGE 7: DATES NOT SET
 - Ask for their preferred travel dates (start and end)
 - Ask if they have flexibility with dates (yes/no/somewhat)
-- Explain how flexibility can affect prices`;
+- Explain how flexibility can affect prices
+- KEEP YOUR RESPONSE TO MAX 3 SENTENCES`;
     } else if (!hasFlexibility) {
       systemPrompt += `
 STAGE 8: CHECK DATE FLEXIBILITY
 - Ask if they're flexible with their dates (strictly booked or can move ±3-7 days?)
-- This helps with finding better flight and hotel deals`;
+- This helps with finding better flight and hotel deals
+- KEEP YOUR RESPONSE TO MAX 3 SENTENCES`;
+    } else if (!hasConfirmed) {
+      systemPrompt += `
+STAGE 9: CONFIRMATION - REVIEW ALL COLLECTED DATA
+Show the user ALL the information collected and ask for confirmation:
+
+Format it like this:
+"Let me confirm your trip details:
+🌍 Origin: ${hasOrigin}
+✈️ Destination: ${hasDestination}
+🎯 Activities: ${hasActivities}
+💰 Budget: ${hasBudget}
+📅 Dates: ${hasDates}
+🔄 Flexibility: ${hasFlexibility}
+
+Is this correct? Reply 'yes' to proceed with activity recommendations, or let me know what to change."
+
+IMPORTANT: Do NOT provide any recommendations yet. Just confirm the data.
+KEEP YOUR RESPONSE CONCISE - just show the data and ask for confirmation.`;
     } else {
       systemPrompt += `
-STAGE 9: ALL INFO COLLECTED - GENERATE DETAILED ITINERARY
+STAGE 10: GENERATE ACTIVITY RECOMMENDATIONS
 Current Trip Details:
 - Origin: ${hasOrigin}
 - Destination: ${hasDestination}
@@ -169,6 +196,7 @@ Current Trip Details:
 - Dates: ${hasDates}
 - Flexibility: ${hasFlexibility}`;
 
+<<<<<<< HEAD
       let hotelRecommendation = "";
       
       // Let's assume you have parsed dates and budget
@@ -218,31 +246,51 @@ systemPrompt += `INSTRUCTIONS FOR GENERATING RECOMMENDATIONS:
      * "Trek the GR20 Trail - Full day experience ⭐ 4.8/5"
      * "Swim at Palombaggia Beach - Free ⭐ 4.7/5"
      * "Kayak in Scandola Nature Reserve - €50/person ⭐ 4.9/5"
+=======
+CRITICAL INSTRUCTIONS FOR ACTIVITY RECOMMENDATIONS:
+
+1. **ONLY ACTIVITIES** - Do NOT recommend hotels or flights (they will be added later via booking API)
+
+2. **FORMAT FOR EACH ACTIVITY:**
+   - ONE sentence description maximum
+   - Include the action verb (Visit, Explore, Dine at, etc.)
+   - Add a real, working link to the official website or a reliable source (TripAdvisor, Google, official tourism site)
+   - Keep it minimal - users can click to learn more
+
+3. **EXAMPLE FORMAT:**
+   Day 1:
+   - Visit Louvre Museum - Home to the Mona Lisa and 35,000 artworks
+     🔗 https://www.louvre.fr
+>>>>>>> 8afd61e301fddf501eb1443138a194d060e7661d
    
-   - The system will AUTOMATICALLY add Google Maps links for EACH place
-   
-3. Include a good mix of:
-   - Breakfast/lunch/dinner recommendations
-   - Activities matching their preferences
-   - Local experiences and cultural sites
-   - Both budget-friendly and premium options
+   - Dine at Le Comptoir du Relais - Classic French bistro in Saint-Germain
+     🔗 https://www.tripadvisor.com/Restaurant_Review-g187147-d719386
 
-4. Respect their budget constraints and spread recommendations across trip days
+   - Explore Eiffel Tower - Iconic landmark with stunning city views
+     🔗 https://www.toureiffel.paris
 
-5. CRITICAL: Always use specific place NAMES, not generic descriptions
-   ✓ CORRECT: "Visit Uffizi Gallery"
-   ✗ WRONG: "Visit museums"
-   ✓ CORRECT: "Hike to Tre Cime di Lavaredo"
-   ✗ WRONG: "Go hiking"
+4. **REQUIREMENTS:**
+   - Create day-by-day itinerary (2-4 activities per day)
+   - Match their activity preference (${hasActivities})
+   - Include breakfast/lunch/dinner spots
+   - Add cultural sites, attractions, and experiences
+   - Each activity = 1 sentence + 1 link
+   - Use real, clickable URLs (no placeholders)
+   - Prioritize official websites, then TripAdvisor, Google Maps, or tourism sites
 
-FORMAT YOUR ITINERARY LIKE THIS:
-Day 1: [Destination/Region]
-- Morning: [Verb] [Specific Place Name] - [Cost] ⭐ [Rating]
-- Lunch: [Verb] [Specific Restaurant Name] - [Cost] ⭐ [Rating]
-- Afternoon: [Verb] [Specific Activity/Place] - [Cost] ⭐ [Rating]
-- Dinner: [Verb] [Specific Restaurant Name] - [Cost] ⭐ [Rating]
+5. **STAY CONCISE:**
+   - No long descriptions
+   - No bullet point explanations
+   - Just: Activity name + one sentence + link
+   - Let the links do the talking
 
-The system will automatically convert these to Google Maps links!`;
+6. **DO NOT INCLUDE:**
+   - Hotel recommendations
+   - Flight details
+   - Transportation between cities
+   - Lengthy background information
+
+Remember: Short, actionable, with real links. Hotels and flights come later!`;
     }
 
     systemPrompt += `
