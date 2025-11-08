@@ -1,6 +1,7 @@
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { BookingComAPI, HotelResult } from "./bookingClient.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -166,9 +167,41 @@ Current Trip Details:
 - Activities Preference: ${hasActivities}
 - Total Budget: ${hasBudget}
 - Dates: ${hasDates}
-- Flexibility: ${hasFlexibility}
+- Flexibility: ${hasFlexibility}`;
 
-INSTRUCTIONS FOR GENERATING RECOMMENDATIONS:
+      let hotelRecommendation = "";
+      
+      // Let's assume you have parsed dates and budget
+      const exampleArrival = "2025-11-20"; // You need to get this from `hasDates`
+      const exampleDeparture = "2025-11-25"; // You need to get this from `hasDates`
+      const budgetMax = conversationData.budget_allocation?.accommodation ?? 1000;
+
+      // Call your new function!
+      const hotelData = await searchHotels(
+        hasDestination, 
+        exampleArrival, 
+        exampleDeparture, 
+        budgetMax
+      );
+
+      if (hotelData) {
+        console.log("Successfully found a hotel:", hotelData.hotel_name);
+        // Add the hotel info to the AI's prompt!
+        hotelRecommendation = `
+RECOMMENDED HOTEL:
+Based on your budget and destination, I found a great option:
+- Name: ${hotelData.hotel_name}
+- Price: Around ${hotelData.currency} ${hotelData.price}
+- Description: ${hotelData.hotel_description}
+Please include this hotel as a top suggestion in the itinerary mentioning that it's found on BAZOOKA, a local search tool.
+`;
+      }
+      
+      systemPrompt += hotelRecommendation; // Add hotel data to the prompt
+      
+// --- END: EXAMPLE ---
+
+systemPrompt += `INSTRUCTIONS FOR GENERATING RECOMMENDATIONS:
 1. Create a day-by-day itinerary based on their preferences
 2. VERY IMPORTANT - For EACH activity, restaurant, or attraction mentioned:
    - Use SPECIFIC place names (not generic descriptions)
@@ -382,3 +415,118 @@ ALWAYS include the extraction block, even if empty: |||EXTRACT|||{}|||END|||`;
     });
   }
 });
+
+// --- Add this function to your index.ts file ---
+// --- You can put it right above your `serve(...)` call ---
+
+/**
+ * This function performs the full hotel search flow,
+ * just like the main() function in your Python script.
+ */
+async function searchHotels(
+  city: string,
+  arrival: string,
+  departure: string,
+  priceMax: number,
+): Promise<HotelResult | null> {
+  console.log(`Starting hotel search for ${city}...`);
+  try {
+    // 1. Get API credentials from environment
+    const API_HOST = Deno.env.get("BOOKING_API_HOST")!;
+    const API_KEY = Deno.env.get("BOOKING_API_KEY")!;
+
+    if (!API_HOST || !API_KEY) {
+      console.error("Booking API Host or Key is not set in environment.");
+      return null;
+    }
+
+    // 2. Initialize the API client with the user's data
+    const apiClient = new BookingComAPI(API_HOST, API_KEY, {
+      CITY_QUERY: city,
+      ARRIVAL_DATE: arrival,
+      DEPARTURE_DATE: departure,
+      PRICE_MAX: priceMax,
+    });
+
+    // 3. Initialize the final result object
+    const resultData: HotelResult = {
+      destination: city, // Default, will be updated
+      hotel_name: "N/A",
+      hotel_description: "N/A",
+      price: 0,
+      currency: "N/A",
+      booking_hotel_id: 0,
+      hotel_photo_url: [],
+      room_photo_url: "N/A",
+    };
+
+    // 4. Search Destination (Step 1 in Python)
+    if (!await apiClient.searchDestination()) {
+      console.log("Final result not available: destination search failed.");
+      return null;
+    }
+    resultData.destination = apiClient.getDestinationName(); // Use the new getter
+
+    // 5. Get Filters (Step 2 in Python - optional, for count)
+    await apiClient.getFilters();
+
+    // 6. Search Hotels (Step 3 in Python)
+    const hotelSearchResult = await apiClient.searchHotels();
+    if (
+      !hotelSearchResult || !hotelSearchResult.data ||
+      !hotelSearchResult.data.hotels ||
+      hotelSearchResult.data.hotels.length === 0
+    ) {
+      console.log("Final result not available: hotel search failed or no results.");
+      return null;
+    }
+
+    const firstHotel = hotelSearchResult.data.hotels[0];
+    const hotelId = firstHotel.hotel_id;
+
+    // 7. Extract data from hotel search
+    resultData.booking_hotel_id = hotelId;
+    resultData.hotel_name = firstHotel.property?.name ?? "N/A";
+    resultData.hotel_description = firstHotel.accessibilityLabel ?? "N/A";
+    
+    // Safely extract price
+    const priceBreakdown = firstHotel.property?.priceBreakdown?.grossPrice;
+    if (priceBreakdown) {
+      resultData.price = priceBreakdown.value ?? 0;
+      resultData.currency = priceBreakdown.currency ?? "N/A";
+    }
+    
+    resultData.hotel_photo_url = firstHotel.property?.photoUrls ?? [];
+    console.log("--- First Hotel Found & Data Collected ---");
+
+    // 8. Get Hotel Details (Step 4 in Python - for room photo)
+    const detailsResult = await apiClient.getHotelDetails(hotelId);
+    if (detailsResult && detailsResult.data) {
+      const rooms = detailsResult.data.rooms;
+      if (rooms) {
+        try {
+          const firstRoomId = Object.keys(rooms)[0];
+          const firstRoomData = rooms[firstRoomId];
+          const photosList = firstRoomData?.photos ?? [];
+          
+          for (const photo of photosList) {
+            if (photo.url_max1280) {
+              resultData.room_photo_url = photo.url_max1280;
+              console.log("✅ Extracted first room photo URL.");
+              break; // Stop after finding the first one
+            }
+          }
+        } catch (e) {
+          console.log("⚠️ No rooms found in details data.");
+        }
+      }
+    }
+
+    console.log("\n🎉 Final Hotel Dictionary Complete.");
+    return resultData;
+
+  } catch (error) {
+    console.error("Error in searchHotels function:", error);
+    return null;
+  }
+}
